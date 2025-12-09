@@ -64,9 +64,7 @@ coverage.xml
 Thumbs.db
 desktop.ini
 
-# Project specific - data files
-data/*.npy
-data/*.npz
+# Project specific - trained models
 *.joblib
 
 # Keep example/placeholder files
