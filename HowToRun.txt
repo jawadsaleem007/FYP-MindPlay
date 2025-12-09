@@ -1,0 +1,11 @@
+ real_time_classifier:
+python .\scripts\real_time_classifier.py --model fbcsp_lda_S02.joblib --sfreq 500 --window 4.0 --step 0.5 --picks C3,Cz,C4 --vote-k 5 --class-names "0:hand_mi,1:rest"
+
+
+
+
+evaluate model:
+python .\scripts\evaluate_trained_model.py --model fbcsp_lda_S0(add number here).joblib --epochs "data\S0(x)_epochs_20251130_172259.npy" --labels "data\S0(x)_labels_20251130_172259.npy" --sfreq 500 --folds 5 --picks 0,1,2
+
+
+python .\scripts\record_trials_lsl.py --subject S02 --picks C3,Cz,C4 --trial-len 4.0 --trials-per-class 80 --prep-len 2.0 --inter-trial 2.0 --randomize --scale-to-uv  
