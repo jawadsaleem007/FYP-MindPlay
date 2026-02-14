@@ -71,7 +71,7 @@ def parse_picks(picks_arg: str) -> Tuple[bool, List[str]]:
     return is_index, parts
 
 
-def resolve_picks(labels: List[str], picks_arg: str, default_names=("Fp1", "Fp2", "Fz")) -> List[int]:
+def resolve_picks(labels: List[str], picks_arg: str, default_names=("Fp1", "Fp2")) -> List[int]:
     is_index, vals = parse_picks(picks_arg) if picks_arg else (False, list(default_names))
     if is_index:
         return [int(v) for v in vals]

@@ -26,6 +26,28 @@ python .\scripts\train_fbcsp_lda.py --epochs epochs.npy --labels labels.npy --sf
 python .\scripts\real_time_classifier.py --model my_model.joblib --sfreq 250 --window 3.0 --step 0.5 --scale-to-uv
 ```
 
+## GUI app (menu + full flow)
+
+Built with **PyQt6** for a modern desktop UI.
+
+Run:
+
+```powershell
+python .\scripts\gui_app.py
+```
+
+GUI includes:
+- Start Training
+- Real Time Classification
+- Exit
+
+Training flow in GUI:
+1. Record trials (`record_trials_lsl.py`)
+2. Train model (`train_fbcsp_lda.py`) with message: *Its Training Wait Please*
+3. Evaluate model (`evaluate_trained_model.py`)
+
+If evaluation accuracy is below 60%, GUI asks **Retry** or **Continue**.
+
 If your Smarting24 LSL stream provides values in volts, pass `--scale-to-uv` to convert to microvolts. The pipeline expects channels ordered as Cz, C3, C4 or similar mapping; ensure channel ordering matches how you record.
 
 **Record labeled data** (MI vs Rest)
