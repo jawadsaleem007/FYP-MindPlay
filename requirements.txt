@@ -5,3 +5,4 @@ joblib
 pylsl
 pytest
 PyQt6
+pynput

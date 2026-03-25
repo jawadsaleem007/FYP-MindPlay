@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 import sys
+import shlex
 import subprocess
 import queue
 from pathlib import Path
@@ -37,6 +38,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QGridLayout,
     QGraphicsDropShadowEffect,
+    QCheckBox,
 )
 
 
@@ -220,6 +222,8 @@ class EEGApp(QMainWindow):
 
         self.training_worker: Optional[TrainingWorker] = None
         self.rt_process: Optional[QProcess] = None
+        self.blink_process: Optional[QProcess] = None
+        self.gyro_process: Optional[QProcess] = None
         self._nav_buttons: dict[str, QPushButton] = {}
 
         self._build_ui()
@@ -246,11 +250,15 @@ class EEGApp(QMainWindow):
 
         self.menu_page = self._create_menu_page()
         self.train_page = self._create_training_page()
-        self.rt_page = self._create_rt_page()
+        self.rt_page = self._create_mi_page()
+        self.blink_page = self._create_blink_page()
+        self.gyro_page = self._create_gyro_page()
 
         self.stack.addWidget(self.menu_page)
         self.stack.addWidget(self.train_page)
         self.stack.addWidget(self.rt_page)
+        self.stack.addWidget(self.blink_page)
+        self.stack.addWidget(self.gyro_page)
         root.addWidget(content, 1)
         self.show_menu()
 
@@ -287,7 +295,13 @@ class EEGApp(QMainWindow):
         n_lay = QVBoxLayout(nav)
         n_lay.setContentsMargins(0, 12, 0, 12)
         n_lay.setSpacing(2)
-        for key, label in [("menu", "\u25C8   Dashboard"), ("training", "\u2699   Model Training"), ("realtime", "\u25C9   Real-Time BCI")]:
+        for key, label in [
+            ("menu", "\u25C8   Dashboard"),
+            ("training", "\u2699   Model Training"),
+            ("realtime", "\u25C9   MI Classifier"),
+            ("blink", "\u25C9   Blink Detection"),
+            ("gyro", "\u25C9   Gyro Detection"),
+        ]:
             btn = QPushButton(label)
             btn.setObjectName("navBtn")
             btn.setCheckable(True)
@@ -298,6 +312,8 @@ class EEGApp(QMainWindow):
         self._nav_buttons["menu"].clicked.connect(self.show_menu)
         self._nav_buttons["training"].clicked.connect(self.show_training)
         self._nav_buttons["realtime"].clicked.connect(self.show_realtime)
+        self._nav_buttons["blink"].clicked.connect(self.show_blink)
+        self._nav_buttons["gyro"].clicked.connect(self.show_gyro)
         lay.addWidget(nav)
         lay.addStretch()
 
@@ -396,6 +412,20 @@ class EEGApp(QMainWindow):
             desc="Load a trained model and stream real-time\nEEG classification results for neuro-\nfeedback applications.",
             btn_text="Launch Session  \u2192", btn_obj="cardBtnTeal",
             on_click=self.show_realtime,
+        ))
+        cards.addWidget(self._make_card(
+            icon="\u25CE", icon_obj="cardIconBadgeSun",
+            title="Blink Detection",
+            desc="Detect intentional blinks from frontal EEG\nchannels and trigger optional key actions\nin real time.",
+            btn_text="Open Blink Page  \u2192", btn_obj="cardBtnSun",
+            on_click=self.show_blink,
+        ))
+        cards.addWidget(self._make_card(
+            icon="\u25EC", icon_obj="cardIconBadgeSky",
+            title="Gyro Detection",
+            desc="Detect head movement from gyro velocity\nwith threshold, deadzone, and key\nmapping controls.",
+            btn_text="Open Gyro Page  \u2192", btn_obj="cardBtnSky",
+            on_click=self.show_gyro,
         ))
         lay.addLayout(cards)
         lay.addStretch()
@@ -535,7 +565,7 @@ class EEGApp(QMainWindow):
         lay.addWidget(console_card, 1)
         return page
 
-    def _create_rt_page(self) -> QWidget:
+    def _create_mi_page(self) -> QWidget:
         page = QWidget()
         page.setObjectName("contentArea")
         lay = QVBoxLayout(page)
@@ -546,7 +576,7 @@ class EEGApp(QMainWindow):
         header = QHBoxLayout()
         title_col = QVBoxLayout()
         title_col.setSpacing(4)
-        pt = QLabel("Real-Time BCI")
+        pt = QLabel("MI Classifier")
         pt.setObjectName("pageTitle")
         title_col.addWidget(pt)
         pd = QLabel("Stream live EEG data and classify motor imagery in real time")
@@ -574,12 +604,12 @@ class EEGApp(QMainWindow):
         self.rt_subject_input.setFixedWidth(160)
         self.rt_subject_input.setPlaceholderText("e.g. S01")
         ctrl_lay.addWidget(self.rt_subject_input)
-        self.btn_rt_start = QPushButton("\u25B6  Start Stream")
+        self.btn_rt_start = QPushButton("\u25B6  Start MI")
         self.btn_rt_start.setObjectName("primary")
         self.btn_rt_start.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_rt_start.clicked.connect(self.start_realtime)
         ctrl_lay.addWidget(self.btn_rt_start)
-        self.btn_rt_stop = QPushButton("\u25A0  Stop")
+        self.btn_rt_stop = QPushButton("\u25A0  Stop MI")
         self.btn_rt_stop.setObjectName("danger")
         self.btn_rt_stop.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_rt_stop.clicked.connect(self.stop_realtime)
@@ -597,13 +627,43 @@ class EEGApp(QMainWindow):
         self.rt_status.setObjectName("statusPill")
         lay.addWidget(self.rt_status)
 
+        cfg = QFrame()
+        cfg.setObjectName("controlCard")
+        cfg_lay = QGridLayout(cfg)
+        cfg_lay.setContentsMargins(20, 14, 20, 14)
+        cfg_lay.setHorizontalSpacing(10)
+        cfg_lay.setVerticalSpacing(8)
+        cfg_lay.addWidget(QLabel("MI sfreq"), 0, 0)
+        self.mi_sfreq_input = QLineEdit("500")
+        cfg_lay.addWidget(self.mi_sfreq_input, 0, 1)
+        cfg_lay.addWidget(QLabel("Window (s)"), 0, 2)
+        self.mi_window_input = QLineEdit("4.0")
+        cfg_lay.addWidget(self.mi_window_input, 0, 3)
+        cfg_lay.addWidget(QLabel("Step (s)"), 1, 0)
+        self.mi_step_input = QLineEdit("0.5")
+        cfg_lay.addWidget(self.mi_step_input, 1, 1)
+        cfg_lay.addWidget(QLabel("Vote-k"), 1, 2)
+        self.mi_vote_input = QLineEdit("5")
+        cfg_lay.addWidget(self.mi_vote_input, 1, 3)
+        cfg_lay.addWidget(QLabel("Picks"), 2, 0)
+        self.mi_picks_input = QLineEdit("C3,Cz,C4")
+        cfg_lay.addWidget(self.mi_picks_input, 2, 1)
+        cfg_lay.addWidget(QLabel("Class names"), 2, 2)
+        self.mi_classes_input = QLineEdit("0:hand_mi,1:rest")
+        cfg_lay.addWidget(self.mi_classes_input, 2, 3)
+        lay.addWidget(cfg)
+
+        self.mi_status = QLabel("Status: Idle")
+        self.mi_status.setObjectName("statusPill")
+        lay.addWidget(self.mi_status)
+
         # Console
         console_card = QFrame()
         console_card.setObjectName("consoleCard")
         c_lay = QVBoxLayout(console_card)
         c_lay.setContentsMargins(0, 0, 0, 0)
         c_lay.setSpacing(0)
-        c_header = QLabel("  \u25CF  Real-Time Neural Output")
+        c_header = QLabel("  \u25CF  MI Runtime Output")
         c_header.setObjectName("consoleHeader")
         c_header.setFixedHeight(36)
         c_lay.addWidget(c_header)
@@ -617,6 +677,227 @@ class EEGApp(QMainWindow):
         shadow_con.setYOffset(6)
         shadow_con.setColor(QColor(0, 0, 0, 15))
         console_card.setGraphicsEffect(shadow_con)
+        lay.addWidget(console_card, 1)
+        return page
+
+    def _create_blink_page(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("contentArea")
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(40, 32, 40, 30)
+        lay.setSpacing(18)
+
+        header = QHBoxLayout()
+        title_col = QVBoxLayout()
+        title_col.setSpacing(4)
+        pt = QLabel("Blink Detection")
+        pt.setObjectName("pageTitle")
+        title_col.addWidget(pt)
+        pd = QLabel("Run frontal-channel blink detection and optional key actions")
+        pd.setObjectName("pageDesc")
+        title_col.addWidget(pd)
+        header.addLayout(title_col)
+        header.addStretch()
+        btn_back = QPushButton("\u2190 Back")
+        btn_back.setObjectName("ghost")
+        btn_back.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_back.clicked.connect(self.back_from_blink)
+        header.addWidget(btn_back)
+        lay.addLayout(header)
+
+        ctrl = QFrame()
+        ctrl.setObjectName("controlCard")
+        ctrl_lay = QHBoxLayout(ctrl)
+        ctrl_lay.setContentsMargins(20, 14, 20, 14)
+        ctrl_lay.setSpacing(14)
+        self.btn_blink_start = QPushButton("\u25B6  Start Blink")
+        self.btn_blink_start.setObjectName("primary")
+        self.btn_blink_start.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_blink_start.clicked.connect(self.start_blink)
+        ctrl_lay.addWidget(self.btn_blink_start)
+        self.btn_blink_stop = QPushButton("\u25A0  Stop Blink")
+        self.btn_blink_stop.setObjectName("danger")
+        self.btn_blink_stop.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_blink_stop.clicked.connect(self.stop_blink)
+        ctrl_lay.addWidget(self.btn_blink_stop)
+        ctrl_lay.addStretch()
+        lay.addWidget(ctrl)
+
+        cfg = QFrame()
+        cfg.setObjectName("controlCard")
+        cfg_lay = QGridLayout(cfg)
+        cfg_lay.setContentsMargins(20, 14, 20, 14)
+        cfg_lay.setHorizontalSpacing(10)
+        cfg_lay.setVerticalSpacing(8)
+        cfg_lay.addWidget(QLabel("Blink sfreq"), 0, 0)
+        self.blink_sfreq_input = QLineEdit("500")
+        cfg_lay.addWidget(self.blink_sfreq_input, 0, 1)
+        cfg_lay.addWidget(QLabel("Picks"), 0, 2)
+        self.blink_picks_input = QLineEdit("Fp1,Fp2")
+        cfg_lay.addWidget(self.blink_picks_input, 0, 3)
+        cfg_lay.addWidget(QLabel("Window (s)"), 1, 0)
+        self.blink_window_input = QLineEdit("0.5")
+        cfg_lay.addWidget(self.blink_window_input, 1, 1)
+        cfg_lay.addWidget(QLabel("Threshold (uV)"), 1, 2)
+        self.blink_thr_input = QLineEdit("80")
+        cfg_lay.addWidget(self.blink_thr_input, 1, 3)
+        cfg_lay.addWidget(QLabel("Refractory (s)"), 2, 0)
+        self.blink_refractory_input = QLineEdit("0.8")
+        cfg_lay.addWidget(self.blink_refractory_input, 2, 1)
+        cfg_lay.addWidget(QLabel("Key (optional)"), 2, 2)
+        self.blink_key_input = QLineEdit("b")
+        cfg_lay.addWidget(self.blink_key_input, 2, 3)
+        self.blink_scale_uv_cb = QCheckBox("Scale incoming values to uV")
+        self.blink_scale_uv_cb.setChecked(True)
+        cfg_lay.addWidget(self.blink_scale_uv_cb, 3, 0, 1, 2)
+        self.blink_extra_input = QLineEdit("")
+        self.blink_extra_input.setPlaceholderText("Extra blink args (optional)")
+        cfg_lay.addWidget(self.blink_extra_input, 3, 2, 1, 2)
+        lay.addWidget(cfg)
+
+        self.blink_status = QLabel("Status: Idle")
+        self.blink_status.setObjectName("statusPill")
+        lay.addWidget(self.blink_status)
+
+        console_card = QFrame()
+        console_card.setObjectName("consoleCard")
+        c_lay = QVBoxLayout(console_card)
+        c_lay.setContentsMargins(0, 0, 0, 0)
+        c_lay.setSpacing(0)
+        c_header = QLabel("  \u25CF  Blink Detector Output")
+        c_header.setObjectName("consoleHeader")
+        c_header.setFixedHeight(36)
+        c_lay.addWidget(c_header)
+        self.blink_log = QTextEdit()
+        self.blink_log.setReadOnly(True)
+        self.blink_log.setObjectName("console")
+        c_lay.addWidget(self.blink_log)
+        lay.addWidget(console_card, 1)
+        return page
+
+    def _create_gyro_page(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("contentArea")
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(40, 32, 40, 30)
+        lay.setSpacing(18)
+
+        header = QHBoxLayout()
+        title_col = QVBoxLayout()
+        title_col.setSpacing(4)
+        pt = QLabel("Gyro Detection")
+        pt.setObjectName("pageTitle")
+        title_col.addWidget(pt)
+        pd = QLabel("Run velocity-based gyroscope detection with configurable thresholds")
+        pd.setObjectName("pageDesc")
+        title_col.addWidget(pd)
+        header.addLayout(title_col)
+        header.addStretch()
+        btn_back = QPushButton("\u2190 Back")
+        btn_back.setObjectName("ghost")
+        btn_back.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_back.clicked.connect(self.back_from_gyro)
+        header.addWidget(btn_back)
+        lay.addLayout(header)
+
+        ctrl = QFrame()
+        ctrl.setObjectName("controlCard")
+        ctrl_lay = QHBoxLayout(ctrl)
+        ctrl_lay.setContentsMargins(20, 14, 20, 14)
+        ctrl_lay.setSpacing(14)
+        self.btn_gyro_start = QPushButton("\u25B6  Start Gyro")
+        self.btn_gyro_start.setObjectName("primary")
+        self.btn_gyro_start.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_gyro_start.clicked.connect(self.start_gyro)
+        ctrl_lay.addWidget(self.btn_gyro_start)
+        self.btn_gyro_stop = QPushButton("\u25A0  Stop Gyro")
+        self.btn_gyro_stop.setObjectName("danger")
+        self.btn_gyro_stop.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_gyro_stop.clicked.connect(self.stop_gyro)
+        ctrl_lay.addWidget(self.btn_gyro_stop)
+        ctrl_lay.addStretch()
+        lay.addWidget(ctrl)
+
+        cfg = QFrame()
+        cfg.setObjectName("controlCard")
+        cfg_lay = QGridLayout(cfg)
+        cfg_lay.setContentsMargins(20, 14, 20, 14)
+        cfg_lay.setHorizontalSpacing(10)
+        cfg_lay.setVerticalSpacing(8)
+        cfg_lay.addWidget(QLabel("Gyro sfreq"), 0, 0)
+        self.gyro_sfreq_input = QLineEdit("500")
+        cfg_lay.addWidget(self.gyro_sfreq_input, 0, 1)
+        cfg_lay.addWidget(QLabel("Channels"), 0, 2)
+        self.gyro_channels_input = QLineEdit("0,1,2")
+        cfg_lay.addWidget(self.gyro_channels_input, 0, 3)
+        cfg_lay.addWidget(QLabel("Stream type"), 1, 0)
+        self.gyro_stream_type_input = QLineEdit("EEG")
+        cfg_lay.addWidget(self.gyro_stream_type_input, 1, 1)
+        cfg_lay.addWidget(QLabel("Scale factor"), 1, 2)
+        self.gyro_scale_input = QLineEdit("1.0")
+        cfg_lay.addWidget(self.gyro_scale_input, 1, 3)
+        cfg_lay.addWidget(QLabel("Vel F/B/L/R"), 2, 0)
+        self.gyro_vel_f_input = QLineEdit("80")
+        cfg_lay.addWidget(self.gyro_vel_f_input, 2, 1)
+        self.gyro_vel_b_input = QLineEdit("80")
+        cfg_lay.addWidget(self.gyro_vel_b_input, 2, 2)
+        self.gyro_vel_l_input = QLineEdit("100")
+        cfg_lay.addWidget(self.gyro_vel_l_input, 2, 3)
+        self.gyro_vel_r_input = QLineEdit("100")
+        cfg_lay.addWidget(self.gyro_vel_r_input, 2, 4)
+        cfg_lay.addWidget(QLabel("Return"), 3, 0)
+        self.gyro_vel_return_input = QLineEdit("20")
+        cfg_lay.addWidget(self.gyro_vel_return_input, 3, 1)
+        cfg_lay.addWidget(QLabel("Deadzone X/Y/Z"), 3, 2)
+        self.gyro_deadzone_x_input = QLineEdit("5")
+        cfg_lay.addWidget(self.gyro_deadzone_x_input, 3, 3)
+        self.gyro_deadzone_y_input = QLineEdit("5")
+        cfg_lay.addWidget(self.gyro_deadzone_y_input, 3, 4)
+        self.gyro_deadzone_z_input = QLineEdit("5")
+        cfg_lay.addWidget(self.gyro_deadzone_z_input, 3, 5)
+        cfg_lay.addWidget(QLabel("Calibration (s)"), 4, 0)
+        self.gyro_calib_input = QLineEdit("2.0")
+        cfg_lay.addWidget(self.gyro_calib_input, 4, 1)
+        cfg_lay.addWidget(QLabel("Smoothing"), 4, 2)
+        self.gyro_smoothing_input = QLineEdit("5")
+        cfg_lay.addWidget(self.gyro_smoothing_input, 4, 3)
+        cfg_lay.addWidget(QLabel("Key mapping"), 5, 0)
+        self.gyro_keymap_input = QLineEdit("forward:w,backward:s,left:a,right:d")
+        cfg_lay.addWidget(self.gyro_keymap_input, 5, 1, 1, 3)
+        self.gyro_output_keys_cb = QCheckBox("Output keypresses")
+        cfg_lay.addWidget(self.gyro_output_keys_cb, 5, 4)
+        self.gyro_verbose_cb = QCheckBox("Verbose")
+        cfg_lay.addWidget(self.gyro_verbose_cb, 5, 5)
+        self.gyro_drift_cb = QCheckBox("Enable drift correction")
+        cfg_lay.addWidget(self.gyro_drift_cb, 6, 0, 1, 2)
+        self.gyro_invert_x_cb = QCheckBox("Invert X")
+        self.gyro_invert_y_cb = QCheckBox("Invert Y")
+        self.gyro_invert_z_cb = QCheckBox("Invert Z")
+        cfg_lay.addWidget(self.gyro_invert_x_cb, 6, 2)
+        cfg_lay.addWidget(self.gyro_invert_y_cb, 6, 3)
+        cfg_lay.addWidget(self.gyro_invert_z_cb, 6, 4)
+        self.gyro_extra_input = QLineEdit("")
+        self.gyro_extra_input.setPlaceholderText("Extra gyro args (optional)")
+        cfg_lay.addWidget(self.gyro_extra_input, 6, 5)
+        lay.addWidget(cfg)
+
+        self.gyro_status = QLabel("Status: Idle")
+        self.gyro_status.setObjectName("statusPill")
+        lay.addWidget(self.gyro_status)
+
+        console_card = QFrame()
+        console_card.setObjectName("consoleCard")
+        c_lay = QVBoxLayout(console_card)
+        c_lay.setContentsMargins(0, 0, 0, 0)
+        c_lay.setSpacing(0)
+        c_header = QLabel("  \u25CF  Gyro Detector Output")
+        c_header.setObjectName("consoleHeader")
+        c_header.setFixedHeight(36)
+        c_lay.addWidget(c_header)
+        self.gyro_log = QTextEdit()
+        self.gyro_log.setReadOnly(True)
+        self.gyro_log.setObjectName("console")
+        c_lay.addWidget(self.gyro_log)
         lay.addWidget(console_card, 1)
         return page
 
@@ -662,6 +943,12 @@ class EEGApp(QMainWindow):
             QLabel#cardIconBadgeTeal {
                 background-color: #E6FAF8; color: #4ECDC4; font-size: 22px; border-radius: 12px;
             }
+            QLabel#cardIconBadgeSun {
+                background-color: #FFF4D6; color: #F59E0B; font-size: 22px; border-radius: 12px;
+            }
+            QLabel#cardIconBadgeSky {
+                background-color: #E0F2FE; color: #0284C7; font-size: 22px; border-radius: 12px;
+            }
             QLabel#cardTitle { font-size: 20px; font-weight: 700; color: #1E293B; }
             QLabel#cardDesc { font-size: 13px; color: #64748B; }
 
@@ -675,6 +962,16 @@ class EEGApp(QMainWindow):
                 font-weight: 600; border-radius: 10px; border: none;
             }
             QPushButton#cardBtnTeal:hover { background-color: #3DB8B0; }
+            QPushButton#cardBtnSun {
+                background-color: #F59E0B; color: white; font-size: 14px;
+                font-weight: 600; border-radius: 10px; border: none;
+            }
+            QPushButton#cardBtnSun:hover { background-color: #D97706; }
+            QPushButton#cardBtnSky {
+                background-color: #0284C7; color: white; font-size: 14px;
+                font-weight: 600; border-radius: 10px; border: none;
+            }
+            QPushButton#cardBtnSky:hover { background-color: #0369A1; }
             QLabel#footerLabel { color: #94A3B8; font-size: 12px; }
 
             /* === PAGE HEADERS === */
@@ -687,6 +984,8 @@ class EEGApp(QMainWindow):
             /* === CONTROLS === */
             QFrame#controlCard { background-color: #FFFFFF; border: 1px solid #E8ECF4; border-radius: 12px; }
             QLabel#inputLabel { font-weight: 600; color: #475569; font-size: 13px; }
+            QFrame#controlCard QLabel { color: #475569; }
+            QFrame#controlCard QCheckBox { color: #475569; font-weight: 500; }
 
             QLineEdit {
                 background-color: #F8FAFC; border: 1.5px solid #E2E8F0;
@@ -762,6 +1061,14 @@ class EEGApp(QMainWindow):
         self.stack.setCurrentWidget(self.rt_page)
         self._set_nav_active("realtime")
 
+    def show_blink(self) -> None:
+        self.stack.setCurrentWidget(self.blink_page)
+        self._set_nav_active("blink")
+
+    def show_gyro(self) -> None:
+        self.stack.setCurrentWidget(self.gyro_page)
+        self._set_nav_active("gyro")
+
     # ── Step Progress ───────────────────────────────────────
 
     def _set_training_step(self, step: int) -> None:
@@ -813,6 +1120,16 @@ class EEGApp(QMainWindow):
     def append_rt_log(self, text: str) -> None:
         self.rt_log.append(text)
         sb = self.rt_log.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def append_blink_log(self, text: str) -> None:
+        self.blink_log.append(text)
+        sb = self.blink_log.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def append_gyro_log(self, text: str) -> None:
+        self.gyro_log.append(text)
+        sb = self.gyro_log.verticalScrollBar()
         sb.setValue(sb.maximum())
 
     def start_training_pipeline(self) -> None:
@@ -878,7 +1195,7 @@ class EEGApp(QMainWindow):
 
     def start_realtime(self) -> None:
         if self.rt_process and self.rt_process.state() != QProcess.ProcessState.NotRunning:
-            QMessageBox.information(self, "Already Running", "Real-time classifier is already running.")
+            QMessageBox.information(self, "Already Running", "MI classifier is already running.")
             return
 
         subject = self.rt_subject_input.text().strip()
@@ -891,59 +1208,216 @@ class EEGApp(QMainWindow):
             QMessageBox.critical(self, "Model Missing", f"Model file not found:\n{model_path}")
             return
 
-        self.append_rt_log(f"\n>>> LOADING MODEL: {model_path.name}")
-        self.rt_status.setText("Status: Streaming...")
+        self.append_rt_log(f"\n>>> [MI] LOADING MODEL: {model_path.name}")
+        self.rt_status.setText("Status: Starting...")
         self.rt_status.setStyleSheet("background-color: #FEF3C7; color: #92400E; padding: 8px 18px; border-radius: 20px; font-weight: 700; font-size: 13px;")
         self.btn_rt_start.setEnabled(False)
 
-        self.rt_process = QProcess(self)
-        self.rt_process.setWorkingDirectory(str(ROOT))
-        self.rt_process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        self.rt_process.readyReadStandardOutput.connect(self._on_rt_output)
-        self.rt_process.finished.connect(self._on_rt_finished)
-
-        args = [
+        mi_args = [
             str(SCRIPTS / "real_time_classifier.py"),
             "--model", str(model_path),
-            "--sfreq", "500",
-            "--window", "4.0",
-            "--step", "0.5",
-            "--picks", "C3,Cz,C4",
-            "--vote-k", "5",
-            "--class-names", "0:hand_mi,1:rest",
+            "--sfreq", self.mi_sfreq_input.text().strip() or "500",
+            "--window", self.mi_window_input.text().strip() or "4.0",
+            "--step", self.mi_step_input.text().strip() or "0.5",
+            "--picks", self.mi_picks_input.text().strip() or "C3,Cz,C4",
+            "--vote-k", self.mi_vote_input.text().strip() or "5",
+            "--class-names", self.mi_classes_input.text().strip() or "0:hand_mi,1:rest",
         ]
-        self.rt_process.start(sys.executable, args)
+        self.rt_process = self._start_module_process("MI", mi_args, self.append_rt_log, self._on_rt_finished)
+        if self.rt_process:
+            self.mi_status.setText("Status: Running")
+            self.mi_status.setStyleSheet("background-color: #DCFCE7; color: #166534; padding: 8px 18px; border-radius: 20px; font-weight: 700; font-size: 13px;")
+            self.rt_status.setText("Status: Running")
+            self.rt_status.setStyleSheet("background-color: #DCFCE7; color: #166534; padding: 8px 18px; border-radius: 20px; font-weight: 700; font-size: 13px;")
+        else:
+            self.rt_status.setText("Status: Error")
+            self.rt_status.setStyleSheet("background-color: #FEE2E2; color: #991B1B; padding: 8px 18px; border-radius: 20px; font-weight: 700; font-size: 13px;")
+            self.btn_rt_start.setEnabled(True)
 
-    def _on_rt_output(self) -> None:
-        if not self.rt_process:
-            return
-        data = bytes(self.rt_process.readAllStandardOutput()).decode(errors="replace")
+    def _start_module_process(self, module_name: str, args: list[str], append_fn, finished_fn) -> Optional[QProcess]:
+        proc = QProcess(self)
+        proc.setWorkingDirectory(str(ROOT))
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        proc.readyReadStandardOutput.connect(lambda n=module_name, p=proc, fn=append_fn: self._on_module_output(n, p, fn))
+        proc.finished.connect(lambda exit_code, _status, fn=finished_fn: fn(exit_code))
+        proc.start(sys.executable, args)
+        if not proc.waitForStarted(3000):
+            append_fn(f">>> [{module_name}] Failed to start process")
+            return None
+        return proc
+
+    def _on_module_output(self, module_name: str, proc: QProcess, append_fn) -> None:
+        data = bytes(proc.readAllStandardOutput()).decode(errors="replace")
         for ln in data.splitlines():
-            self.append_rt_log(ln)
+            append_fn(f"[{module_name}] {ln}")
 
-    def _on_rt_finished(self, exit_code: int, _status) -> None:
+    def _on_rt_finished(self, exit_code: int) -> None:
+        self.rt_process = None
+        self.btn_rt_start.setEnabled(True)
         if exit_code == 0:
+            self.mi_status.setText("Status: Stopped")
+            self.mi_status.setStyleSheet("background-color: #EBE9FF; color: #6C63FF; padding: 8px 18px; border-radius: 20px; font-weight: 700; font-size: 13px;")
             self.rt_status.setText("Status: Stopped")
             self.rt_status.setStyleSheet("background-color: #EBE9FF; color: #6C63FF; padding: 8px 18px; border-radius: 20px; font-weight: 700; font-size: 13px;")
         else:
+            self.mi_status.setText(f"Status: Error ({exit_code})")
+            self.mi_status.setStyleSheet("background-color: #FEE2E2; color: #991B1B; padding: 8px 18px; border-radius: 20px; font-weight: 700; font-size: 13px;")
             self.rt_status.setText(f"Status: Error ({exit_code})")
             self.rt_status.setStyleSheet("background-color: #FEE2E2; color: #991B1B; padding: 8px 18px; border-radius: 20px; font-weight: 700; font-size: 13px;")
-        self.btn_rt_start.setEnabled(True)
-        self.rt_process = None
+        self.append_rt_log(f">>> [MI] Process exited with code {exit_code}")
+
+    def start_blink(self) -> None:
+        if self.blink_process and self.blink_process.state() != QProcess.ProcessState.NotRunning:
+            QMessageBox.information(self, "Already Running", "Blink detector is already running.")
+            return
+
+        self.blink_status.setText("Status: Starting...")
+        self.blink_status.setStyleSheet("background-color: #FEF3C7; color: #92400E; padding: 8px 18px; border-radius: 20px; font-weight: 700; font-size: 13px;")
+        self.btn_blink_start.setEnabled(False)
+        self.append_blink_log("\n>>> [BLINK] STARTING BLINK DETECTOR")
+
+        blink_args = [
+            str(SCRIPTS / "blink_detector.py"),
+            "--sfreq", self.blink_sfreq_input.text().strip() or "500",
+            "--picks", self.blink_picks_input.text().strip() or "Fp1,Fp2",
+            "--window", self.blink_window_input.text().strip() or "0.5",
+            "--threshold-uv", self.blink_thr_input.text().strip() or "80",
+            "--refractory", self.blink_refractory_input.text().strip() or "0.8",
+        ]
+        if self.blink_scale_uv_cb.isChecked():
+            blink_args.append("--scale-to-uv")
+        blink_key = self.blink_key_input.text().strip()
+        if blink_key:
+            blink_args.extend(["--key", blink_key])
+        extra = self.blink_extra_input.text().strip()
+        if extra:
+            blink_args.extend(shlex.split(extra))
+
+        self.blink_process = self._start_module_process("Blink", blink_args, self.append_blink_log, self._on_blink_finished)
+        if self.blink_process:
+            self.blink_status.setText("Status: Running")
+            self.blink_status.setStyleSheet("background-color: #DCFCE7; color: #166534; padding: 8px 18px; border-radius: 20px; font-weight: 700; font-size: 13px;")
+        else:
+            self.blink_status.setText("Status: Error")
+            self.blink_status.setStyleSheet("background-color: #FEE2E2; color: #991B1B; padding: 8px 18px; border-radius: 20px; font-weight: 700; font-size: 13px;")
+            self.btn_blink_start.setEnabled(True)
+
+    def _on_blink_finished(self, exit_code: int) -> None:
+        self.blink_process = None
+        self.btn_blink_start.setEnabled(True)
+        if exit_code == 0:
+            self.blink_status.setText("Status: Stopped")
+            self.blink_status.setStyleSheet("background-color: #EBE9FF; color: #6C63FF; padding: 8px 18px; border-radius: 20px; font-weight: 700; font-size: 13px;")
+        else:
+            self.blink_status.setText(f"Status: Error ({exit_code})")
+            self.blink_status.setStyleSheet("background-color: #FEE2E2; color: #991B1B; padding: 8px 18px; border-radius: 20px; font-weight: 700; font-size: 13px;")
+        self.append_blink_log(f">>> [Blink] Process exited with code {exit_code}")
+
+    def start_gyro(self) -> None:
+        if self.gyro_process and self.gyro_process.state() != QProcess.ProcessState.NotRunning:
+            QMessageBox.information(self, "Already Running", "Gyro detector is already running.")
+            return
+
+        self.gyro_status.setText("Status: Starting...")
+        self.gyro_status.setStyleSheet("background-color: #FEF3C7; color: #92400E; padding: 8px 18px; border-radius: 20px; font-weight: 700; font-size: 13px;")
+        self.btn_gyro_start.setEnabled(False)
+        self.append_gyro_log("\n>>> [GYRO] STARTING GYRO DETECTOR")
+
+        gyro_args = [
+            str(SCRIPTS / "gyro_detector.py"),
+            "--sfreq", self.gyro_sfreq_input.text().strip() or "500",
+            "--gyro-channels", self.gyro_channels_input.text().strip() or "0,1,2",
+            "--stream-type", self.gyro_stream_type_input.text().strip() or "EEG",
+            "--vel-forward", self.gyro_vel_f_input.text().strip() or "80",
+            "--vel-backward", self.gyro_vel_b_input.text().strip() or "80",
+            "--vel-left", self.gyro_vel_l_input.text().strip() or "100",
+            "--vel-right", self.gyro_vel_r_input.text().strip() or "100",
+            "--vel-return", self.gyro_vel_return_input.text().strip() or "20",
+            "--deadzone-x", self.gyro_deadzone_x_input.text().strip() or "5",
+            "--deadzone-y", self.gyro_deadzone_y_input.text().strip() or "5",
+            "--deadzone-z", self.gyro_deadzone_z_input.text().strip() or "5",
+            "--scale-factor", self.gyro_scale_input.text().strip() or "1.0",
+            "--calibration-duration", self.gyro_calib_input.text().strip() or "2.0",
+            "--smoothing-window", self.gyro_smoothing_input.text().strip() or "5",
+            "--key-mapping", self.gyro_keymap_input.text().strip() or "forward:w,backward:s,left:a,right:d",
+        ]
+        if self.gyro_output_keys_cb.isChecked():
+            gyro_args.append("--output-keys")
+        if self.gyro_verbose_cb.isChecked():
+            gyro_args.append("--verbose")
+        if self.gyro_drift_cb.isChecked():
+            gyro_args.append("--enable-drift-correction")
+        if self.gyro_invert_x_cb.isChecked():
+            gyro_args.append("--invert-x")
+        if self.gyro_invert_y_cb.isChecked():
+            gyro_args.append("--invert-y")
+        if self.gyro_invert_z_cb.isChecked():
+            gyro_args.append("--invert-z")
+        extra = self.gyro_extra_input.text().strip()
+        if extra:
+            gyro_args.extend(shlex.split(extra))
+
+        self.gyro_process = self._start_module_process("Gyro", gyro_args, self.append_gyro_log, self._on_gyro_finished)
+        if self.gyro_process:
+            self.gyro_status.setText("Status: Running")
+            self.gyro_status.setStyleSheet("background-color: #DCFCE7; color: #166534; padding: 8px 18px; border-radius: 20px; font-weight: 700; font-size: 13px;")
+        else:
+            self.gyro_status.setText("Status: Error")
+            self.gyro_status.setStyleSheet("background-color: #FEE2E2; color: #991B1B; padding: 8px 18px; border-radius: 20px; font-weight: 700; font-size: 13px;")
+            self.btn_gyro_start.setEnabled(True)
+
+    def _on_gyro_finished(self, exit_code: int) -> None:
+        self.gyro_process = None
+        self.btn_gyro_start.setEnabled(True)
+        if exit_code == 0:
+            self.gyro_status.setText("Status: Stopped")
+            self.gyro_status.setStyleSheet("background-color: #EBE9FF; color: #6C63FF; padding: 8px 18px; border-radius: 20px; font-weight: 700; font-size: 13px;")
+        else:
+            self.gyro_status.setText(f"Status: Error ({exit_code})")
+            self.gyro_status.setStyleSheet("background-color: #FEE2E2; color: #991B1B; padding: 8px 18px; border-radius: 20px; font-weight: 700; font-size: 13px;")
+        self.append_gyro_log(f">>> [Gyro] Process exited with code {exit_code}")
 
     def stop_realtime(self) -> None:
         if self.rt_process and self.rt_process.state() != QProcess.ProcessState.NotRunning:
             self.rt_status.setText("Status: Stopping...")
+            self.mi_status.setText("Status: Stopping...")
             self.rt_process.terminate()
         else:
             self.rt_status.setText("Status: Idle")
+            self.btn_rt_start.setEnabled(True)
+
+    def stop_blink(self) -> None:
+        if self.blink_process and self.blink_process.state() != QProcess.ProcessState.NotRunning:
+            self.blink_status.setText("Status: Stopping...")
+            self.blink_process.terminate()
+        else:
+            self.blink_status.setText("Status: Idle")
+            self.btn_blink_start.setEnabled(True)
+
+    def stop_gyro(self) -> None:
+        if self.gyro_process and self.gyro_process.state() != QProcess.ProcessState.NotRunning:
+            self.gyro_status.setText("Status: Stopping...")
+            self.gyro_process.terminate()
+        else:
+            self.gyro_status.setText("Status: Idle")
+            self.btn_gyro_start.setEnabled(True)
 
     def back_from_rt(self) -> None:
         self.stop_realtime()
         self.show_menu()
 
+    def back_from_blink(self) -> None:
+        self.stop_blink()
+        self.show_menu()
+
+    def back_from_gyro(self) -> None:
+        self.stop_gyro()
+        self.show_menu()
+
     def closeEvent(self, event) -> None:
         self.stop_realtime()
+        self.stop_blink()
+        self.stop_gyro()
         event.accept()
 
 
