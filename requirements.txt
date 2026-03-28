@@ -6,3 +6,4 @@ pylsl
 pytest
 PyQt6
 pynput
+pydirectinput

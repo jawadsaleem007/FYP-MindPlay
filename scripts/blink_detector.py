@@ -14,6 +14,10 @@ Example:
       --threshold-uv 80 --refractory 0.8 --key b
 """
 import time
+import os
+import ctypes
+import subprocess
+import importlib
 from pathlib import Path
 import sys
 from typing import List, Tuple
@@ -23,10 +27,34 @@ from pylsl import StreamInlet, resolve_byprop
 from scipy.signal import butter, filtfilt
 
 try:
-    from pynput.keyboard import Controller as KBController
-    _kb = KBController()
+    pydirectinput = importlib.import_module('pydirectinput')
+    _key_output_available = True
 except Exception:
-    _kb = None
+    pydirectinput = None
+    _key_output_available = False
+
+
+def _is_windows_admin() -> bool:
+    """Return True when running elevated on Windows."""
+    if os.name != 'nt':
+        return True
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def ensure_admin_privileges() -> None:
+    """On Windows, relaunch via UAC prompt unless already elevated."""
+    if os.name != 'nt' or _is_windows_admin():
+        return
+
+    print('Requesting administrator privileges (UAC)...')
+    params = subprocess.list2cmdline(sys.argv)
+    result = ctypes.windll.shell32.ShellExecuteW(None, 'runas', sys.executable, params, None, 1)
+    if result <= 32:
+        raise RuntimeError('Failed to relaunch with administrator privileges.')
+    sys.exit(0)
 
 
 def butter_bandpass(low, high, fs, order=4):
@@ -88,17 +116,18 @@ def resolve_picks(labels: List[str], picks_arg: str, default_names=("Fp1", "Fp2"
 
 
 def press_key_once(k='b'):
-    if _kb is None:
+    if not _key_output_available:
         return False
     try:
-        _kb.press(k)
-        _kb.release(k)
+        pydirectinput.press(k)
         return True
     except Exception:
         return False
 
 
 def main():
+    ensure_admin_privileges()
+
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument('--sfreq', type=float, default=0.0, help='Sampling rate; if 0, use stream nominal rate')

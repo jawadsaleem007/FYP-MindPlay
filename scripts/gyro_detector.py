@@ -40,22 +40,58 @@ All parameters are customizable via command line arguments.
 """
 import time
 import argparse
+import ctypes
+import atexit
 from pathlib import Path
+import subprocess
 import sys
+import os
+import importlib
 from typing import List, Tuple, Optional, Union
 from collections import deque
+from datetime import datetime
 
 import numpy as np
 from pylsl import StreamInlet, resolve_byprop
 
 try:
-    from pynput.keyboard import Controller as KBController, Key, Listener
-    _kb = KBController()
-    _keyboard_available = True
+    pydirectinput = importlib.import_module('pydirectinput')
+    _key_output_available = True
 except Exception:
-    _kb = None
-    _keyboard_available = False
-    print("Warning: pynput not available. Install with: pip install pynput")
+    pydirectinput = None
+    _key_output_available = False
+    print("Warning: pydirectinput not available. Install with: pip install pydirectinput")
+
+try:
+    from pynput.keyboard import Listener
+    _listener_available = True
+except Exception:
+    Listener = None
+    _listener_available = False
+    print("Warning: pynput not available. Recalibration hotkeys (R/Q) disabled.")
+
+
+def _is_windows_admin() -> bool:
+    """Return True when running elevated on Windows."""
+    if os.name != 'nt':
+        return True
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def ensure_admin_privileges() -> None:
+    """On Windows, re-launch script with UAC prompt unless already elevated."""
+    if os.name != 'nt' or _is_windows_admin():
+        return
+
+    print("Requesting administrator privileges (UAC)...")
+    params = subprocess.list2cmdline(sys.argv)
+    result = ctypes.windll.shell32.ShellExecuteW(None, 'runas', sys.executable, params, None, 1)
+    if result <= 32:
+        raise RuntimeError("Failed to relaunch with administrator privileges.")
+    sys.exit(0)
 
 
 class VelocityDetector:
@@ -76,6 +112,7 @@ class VelocityDetector:
                  gamepad_ud_only: bool = False,
                  gamepad_center_on_neutral: bool = False,
                  gamepad_activation_samples: int = 3,
+                 gamepad_center_delay: float = 1.0,
                  # Return threshold - velocity must drop below this to re-enable detection
                  vel_return: float = 20.0,
                  # Deadzone - minimum velocity to consider as movement (filters noise)
@@ -108,6 +145,7 @@ class VelocityDetector:
         self.gamepad_ud_only = gamepad_ud_only
         self.gamepad_center_on_neutral = gamepad_center_on_neutral
         self.gamepad_activation_samples = max(1, int(gamepad_activation_samples))
+        self.gamepad_center_delay = max(0.0, float(gamepad_center_delay))
         self.vel_return = vel_return
         self.deadzone_x = deadzone_x
         self.deadzone_y = deadzone_y
@@ -159,6 +197,7 @@ class VelocityDetector:
         }
         self.current_direction = 'center'
         self.gamepad_wait_neutral_after_center = False
+        self.gamepad_center_block_until = 0.0
         self.gamepad_candidate_direction: Optional[str] = None
         self.gamepad_candidate_count = 0
 
@@ -167,6 +206,13 @@ class VelocityDetector:
         lr_axis = vel_z if self.use_z_for_lr else vel_x
         left_thr = self.z_left_threshold if self.use_z_for_lr else self.vel_left
         right_thr = self.z_right_threshold if self.use_z_for_lr else self.vel_right
+        if self.y_like_lr:
+            # Mirror Z left/right trigger levels onto Y forward/backward.
+            y_forward_thr = left_thr
+            y_backward_thr = right_thr
+        else:
+            y_forward_thr = self.vel_forward
+            y_backward_thr = self.vel_backward
         scores = {
             'left': max(0.0, lr_axis - left_thr),
             'right': max(0.0, -lr_axis - right_thr),
@@ -177,8 +223,8 @@ class VelocityDetector:
             scores['left'] = 0.0
             scores['right'] = 0.0
         if not self.gamepad_lr_only:
-            scores['forward'] = max(0.0, vel_y - self.vel_forward)
-            scores['backward'] = max(0.0, -vel_y - self.vel_backward)
+            scores['forward'] = max(0.0, vel_y - y_forward_thr)
+            scores['backward'] = max(0.0, -vel_y - y_backward_thr)
         return scores
 
     def _gamepad_centered(self, vel_x: float, vel_y: float, vel_z: float) -> bool:
@@ -191,12 +237,14 @@ class VelocityDetector:
             return abs(lr_axis) < lr_deadzone
         if self.current_direction in ('forward', 'backward'):
             if self.y_like_lr:
-                return abs(vel_y) < self.deadzone_y
+                # Mirror Z neutral threshold onto Y when Y is configured like LR.
+                return abs(vel_y) < (self.deadzone_z if self.use_z_for_lr else self.deadzone_y)
             return abs(vel_y) < self.vel_return
         return True
 
     def _process_gamepad_mode(self, vel_x: float, vel_y: float, vel_z: float) -> Optional[str]:
         """Single-direction gamepad behavior with opposite-direction cancel to center."""
+        now = time.time()
         scores = self._gamepad_scores(vel_x, vel_y, vel_z)
         best_direction, best_score = max(scores.items(), key=lambda kv: kv[1])
 
@@ -211,13 +259,23 @@ class VelocityDetector:
         if self.current_direction != 'center':
             opp = opposite.get(self.current_direction)
             if self.gamepad_center_on_neutral and self._gamepad_centered(vel_x, vel_y, vel_z):
+                previous_direction = self.current_direction
                 self.current_direction = 'center'
+                if previous_direction in ('forward', 'backward'):
+                    self.gamepad_center_block_until = now + self.gamepad_center_delay
                 return 'center'
             if opp and scores.get(opp, 0.0) > 0.0:
+                previous_direction = self.current_direction
                 self.current_direction = 'center'
+                if previous_direction in ('forward', 'backward'):
+                    self.gamepad_center_block_until = now + self.gamepad_center_delay
                 # After opposite cancel, require neutral release before next direction.
                 self.gamepad_wait_neutral_after_center = True
                 return 'center'
+            return None
+
+        # Optional delay gate after forward/backward returns to center.
+        if now < self.gamepad_center_block_until:
             return None
 
         if self.gamepad_wait_neutral_after_center:
@@ -260,6 +318,7 @@ class VelocityDetector:
         self.is_stationary = False
         self.current_direction = 'center'
         self.gamepad_wait_neutral_after_center = False
+        self.gamepad_center_block_until = 0.0
         self.gamepad_candidate_direction = None
         self.gamepad_candidate_count = 0
         # Reset all active states
@@ -530,14 +589,13 @@ class VelocityDetector:
 
 def send_keypress(direction: str, key_map: dict):
     """Send a single keypress for the detected direction."""
-    if not _keyboard_available:
+    if not _key_output_available:
         return
         
     key = key_map.get(direction)
     if key:
         try:
-            _kb.press(key)
-            _kb.release(key)
+            pydirectinput.press(key)
             print(f">>> {direction.upper():9s} detected -> Key '{key}' pressed")
         except Exception as e:
             print(f"Error sending key: {e}")
@@ -561,20 +619,20 @@ def parse_key_mapping(mapping_arg: str) -> dict:
     return mapping
 
 
-def resolve_key_token(token: str) -> Union[str, object]:
-    """Convert mapping token to pynput key object when needed."""
+def resolve_key_token(token: str) -> str:
+    """Convert mapping token to pydirectinput-compatible key name."""
     if not token:
         return token
     t = token.strip().lower()
     special = {
-        'left': Key.left,
-        'right': Key.right,
-        'up': Key.up,
-        'down': Key.down,
-        'space': Key.space,
-        'enter': Key.enter,
-        'esc': Key.esc,
-        'tab': Key.tab,
+        'left': 'left',
+        'right': 'right',
+        'up': 'up',
+        'down': 'down',
+        'space': 'space',
+        'enter': 'enter',
+        'esc': 'esc',
+        'tab': 'tab',
     }
     if t in special:
         return special[t]
@@ -595,7 +653,63 @@ def on_key_press(key, detector: VelocityDetector):
         pass
 
 
+class _TeeStream:
+    """Mirror writes to both console and a log file."""
+
+    def __init__(self, original_stream, log_stream):
+        self._original_stream = original_stream
+        self._log_stream = log_stream
+
+    def write(self, data):
+        self._original_stream.write(data)
+        self._log_stream.write(data)
+
+    def flush(self):
+        self._original_stream.flush()
+        self._log_stream.flush()
+
+    def isatty(self):
+        return self._original_stream.isatty()
+
+
+def setup_output_logging(log_file: str):
+    """Tee stdout/stderr to a log file when log_file is provided."""
+    if not log_file:
+        return None
+
+    log_path = Path(log_file)
+    if log_path.exists() and log_path.is_dir():
+        stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        log_path = log_path / f'gyro_detector_{stamp}.log'
+
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_handle = open(log_path, mode='a', encoding='utf-8', buffering=1)
+
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    sys.stdout = _TeeStream(original_stdout, log_handle)
+    sys.stderr = _TeeStream(original_stderr, log_handle)
+
+    header = f"\n{'=' * 70}\nLog started: {datetime.now().isoformat()}\n{'=' * 70}\n"
+    print(header, end='')
+    print(f"Logging script output to: {log_path}")
+
+    def _restore_streams():
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+        try:
+            log_handle.flush()
+            log_handle.close()
+        except Exception:
+            pass
+
+    atexit.register(_restore_streams)
+    return log_handle
+
+
 def main():
+    ensure_admin_privileges()
+
     ap = argparse.ArgumentParser(description="Gyroscope velocity-based detector for Smarting24")
     
     # Stream parameters
@@ -633,6 +747,8 @@ def main():
                     help='In gamepad mode, return to center when active axis comes back into neutral zone')
     ap.add_argument('--gamepad-activation-samples', type=int, default=3,
                     help='Consecutive samples required to activate a direction from center in gamepad mode')
+    ap.add_argument('--gamepad-center-delay', type=float, default=1.0,
+                    help='Seconds to wait in center after forward/backward returns to center before allowing any new direction')
     ap.add_argument('--vel-return', type=float, default=20.0,
                     help='Return threshold - velocity must drop below this to unlock (deg/s)')
     
@@ -673,8 +789,11 @@ def main():
     # Debug options
     ap.add_argument('--verbose', action='store_true',
                     help='Print detailed velocity information')
+    ap.add_argument('--log-file', type=str, default='',
+                    help='Log file path for saving script output (console output is still shown)')
     
     args = ap.parse_args()
+    log_handle = setup_output_logging(args.log_file)
     
     # Parse key mapping
     key_map = parse_key_mapping(args.key_mapping)
@@ -722,6 +841,7 @@ def main():
         gamepad_ud_only=args.gamepad_ud_only,
         gamepad_center_on_neutral=args.gamepad_center_on_neutral,
         gamepad_activation_samples=args.gamepad_activation_samples,
+        gamepad_center_delay=args.gamepad_center_delay,
         vel_return=args.vel_return,
         deadzone_x=args.deadzone_x,
         deadzone_y=args.deadzone_y,
@@ -739,7 +859,8 @@ def main():
     detector.start_calibration()
     
     # Start keyboard listener if available
-    if _keyboard_available:
+    listener = None
+    if _listener_available:
         listener = Listener(on_press=lambda key: on_key_press(key, detector))
         listener.start()
         print("Keyboard listener active (press 'R' to recalibrate, 'Q' to quit)")
@@ -782,7 +903,7 @@ def main():
             direction, velocity = detector.process_sample(gyro_sample)
 
             # In gamepad mode, keep repeating left/right until center is reached.
-            if args.gamepad_mode and args.output_keys and _keyboard_available:
+            if args.gamepad_mode and args.output_keys and _key_output_available:
                 active_dir = detector.current_direction
                 if active_dir in ('left', 'right', 'forward', 'backward'):
                     now = time.time()
@@ -790,15 +911,14 @@ def main():
                     if (now - last_repeat_time[active_dir]) >= interval:
                         try:
                             repeat_key_map = {
-                                'left': Key.left,
-                                'right': Key.right,
+                                'left': 'left',
+                                'right': 'right',
                                 # Reversed as requested: forward->down, backward->up.
-                                'forward': Key.down,
-                                'backward': Key.up,
+                                'forward': 'down',
+                                'backward': 'up',
                             }
                             repeat_key = repeat_key_map[active_dir]
-                            _kb.press(repeat_key)
-                            _kb.release(repeat_key)
+                            pydirectinput.press(repeat_key)
                             last_repeat_time[active_dir] = now
                             if args.verbose:
                                 label = {
@@ -843,10 +963,15 @@ def main():
     except KeyboardInterrupt:
         print("\n\nStopped by user (Ctrl+C)")
     finally:
-        if _keyboard_available:
+        if listener is not None:
             try:
                 listener.stop()
             except:
+                pass
+        if log_handle is not None:
+            try:
+                log_handle.flush()
+            except Exception:
                 pass
         print("Cleanup complete.")
 

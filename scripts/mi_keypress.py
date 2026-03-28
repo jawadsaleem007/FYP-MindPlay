@@ -15,6 +15,10 @@ Example:
 """
 import time
 import sys
+import os
+import ctypes
+import subprocess
+import importlib
 from collections import deque
 from pathlib import Path
 
@@ -23,10 +27,34 @@ from pylsl import StreamInlet, resolve_byprop
 
 # keyboard control
 try:
-    from pynput.keyboard import Controller, Key
-    _kb = Controller()
-except Exception as e:
-    _kb = None
+    pydirectinput = importlib.import_module('pydirectinput')
+    _key_output_available = True
+except Exception:
+    pydirectinput = None
+    _key_output_available = False
+
+
+def _is_windows_admin() -> bool:
+    """Return True when running elevated on Windows."""
+    if os.name != 'nt':
+        return True
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def ensure_admin_privileges() -> None:
+    """On Windows, relaunch via UAC prompt unless already elevated."""
+    if os.name != 'nt' or _is_windows_admin():
+        return
+
+    print('Requesting administrator privileges (UAC)...')
+    params = subprocess.list2cmdline(sys.argv)
+    result = ctypes.windll.shell32.ShellExecuteW(None, 'runas', sys.executable, params, None, 1)
+    if result <= 32:
+        raise RuntimeError('Failed to relaunch with administrator privileges.')
+    sys.exit(0)
 
 # Ensure project root on sys.path
 ROOT = Path(__file__).resolve().parents[1]
@@ -87,12 +115,11 @@ def resolve_picks(info, picks_arg, default_names=('Cz', 'C3', 'C4')):
 
 
 def press_key_once(k='a'):
-    if _kb is None:
-        print('Warning: keyboard controller unavailable (pynput not installed).')
+    if not _key_output_available:
+        print('Warning: keyboard controller unavailable (pydirectinput not installed).')
         return False
     try:
-        _kb.press(k)
-        _kb.release(k)
+        pydirectinput.press(k)
         return True
     except Exception as e:
         print('Keyboard press failed:', e)
@@ -157,6 +184,8 @@ def run(model_path, sfreq, window_s, step_s, picks, scale_to_uV, vote_k,
 
 
 def main():
+    ensure_admin_privileges()
+
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument('--model', type=str, required=True)
