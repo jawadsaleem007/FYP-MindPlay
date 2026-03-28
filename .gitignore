@@ -73,3 +73,6 @@ desktop.ini
 
 # Logs
 *.log
+
+# Runtime state files
+gamepad_state.json

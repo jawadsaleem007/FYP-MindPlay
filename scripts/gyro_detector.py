@@ -42,6 +42,7 @@ import time
 import argparse
 import ctypes
 import atexit
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -707,6 +708,49 @@ def setup_output_logging(log_file: str):
     return log_handle
 
 
+class OverlayStateWriter:
+    """Writes gamepad state to JSON file for overlay display."""
+    
+    def __init__(self, state_file: str):
+        if state_file:
+            file_path = Path(state_file)
+            if not file_path.is_absolute():
+                project_root = Path(__file__).resolve().parent.parent
+                file_path = project_root / file_path
+            self.state_file = file_path.resolve()
+        else:
+            self.state_file = None
+        self.last_write_time = 0.0
+        self.write_interval = 0.05  # Throttle writes to max 20 updates/sec
+    
+    def update(self, command: str, active_states: dict, output_text: str = "idle"):
+        """Update overlay state file with current gamepad status."""
+        if not self.state_file:
+            return
+        
+        now = time.time()
+        if (now - self.last_write_time) < self.write_interval:
+            return  # Throttle writes
+        
+        try:
+            state_data = {
+                "command": command or "center",
+                "active_states": active_states,
+                "output": output_text,
+                "timestamp": now,
+            }
+            
+            # Atomic write: temp file then rename
+            temp_file = self.state_file.with_suffix('.tmp')
+            with open(temp_file, 'w') as f:
+                json.dump(state_data, f)
+            temp_file.replace(self.state_file)
+            
+            self.last_write_time = now
+        except Exception:
+            pass  # Silently fail if overlay file write fails
+
+
 def main():
     ensure_admin_privileges()
 
@@ -791,6 +835,8 @@ def main():
                     help='Print detailed velocity information')
     ap.add_argument('--log-file', type=str, default='',
                     help='Log file path for saving script output (console output is still shown)')
+    ap.add_argument('--overlay-state-file', type=str, default='',
+                    help='JSON file path for overlay state updates (e.g., gamepad_state.json)')
     
     args = ap.parse_args()
     log_handle = setup_output_logging(args.log_file)
@@ -869,6 +915,11 @@ def main():
     
     print("\nStarting detection loop...\n")
     
+    # Initialize overlay state writer
+    overlay_writer = OverlayStateWriter(args.overlay_state_file) if args.overlay_state_file else None
+    if overlay_writer and overlay_writer.state_file:
+        print(f"Overlay state will be written to: {overlay_writer.state_file}\n")
+    
     try:
         sample_count = 0
         last_repeat_time = {
@@ -901,6 +952,7 @@ def main():
             
             # Process sample
             direction, velocity = detector.process_sample(gyro_sample)
+            output_state_text = "idle"
 
             # In gamepad mode, keep repeating left/right until center is reached.
             if args.gamepad_mode and args.output_keys and _key_output_available:
@@ -919,6 +971,7 @@ def main():
                             }
                             repeat_key = repeat_key_map[active_dir]
                             pydirectinput.press(repeat_key)
+                            output_state_text = f"holding {active_dir}"
                             last_repeat_time[active_dir] = now
                             if args.verbose:
                                 label = {
@@ -930,6 +983,17 @@ def main():
                                 print(f">>> {label:9s} repeat -> Arrow key pressed")
                         except Exception as e:
                             print(f"Error sending repeated arrow key: {e}")
+            
+            # Update overlay with current state
+            if overlay_writer:
+                current_cmd = detector.current_direction if args.gamepad_mode else (direction if direction else "center")
+                if output_state_text == "idle" and direction:
+                    output_state_text = f"detected {direction}"
+                overlay_writer.update(
+                    command=current_cmd,
+                    active_states=detector.direction_active,
+                    output_text=output_state_text,
+                )
             
             # Print verbose info
             if args.verbose and sample_count % 50 == 0:
