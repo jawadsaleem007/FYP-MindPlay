@@ -1,9 +1,32 @@
 param(
   [string]$ModelPath = "",
-  [switch]$NoOverlayFollow
+  [switch]$NoOverlayFollow,
+  [string]$StatusFile = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+$script:StatusPath = ""
+if (-not [string]::IsNullOrWhiteSpace($StatusFile)) {
+  try {
+    $script:StatusPath = [System.IO.Path]::GetFullPath($StatusFile)
+  } catch {
+    $script:StatusPath = $StatusFile
+  }
+}
+
+$script:LaunchStatus = [ordered]@{
+  phase = "init"
+  message = "Initializing launcher"
+  admin = $false
+  updated_at = (Get-Date).ToString("o")
+  components = [ordered]@{
+    overlay = [ordered]@{ state = "pending"; pid = 0; message = "" }
+    gyro = [ordered]@{ state = "pending"; pid = 0; message = "" }
+    blink = [ordered]@{ state = "pending"; pid = 0; message = "" }
+    classifier = [ordered]@{ state = "pending"; pid = 0; message = "" }
+  }
+}
 
 function Test-IsAdmin {
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -13,6 +36,86 @@ function Test-IsAdmin {
 
 function Quote-Single([string]$value) {
   return "'" + $value.Replace("'", "''") + "'"
+}
+
+function Write-StatusFile {
+  if ([string]::IsNullOrWhiteSpace($script:StatusPath)) {
+    return
+  }
+  try {
+    $script:LaunchStatus.updated_at = (Get-Date).ToString("o")
+    $statusDir = Split-Path -Parent $script:StatusPath
+    if (-not [string]::IsNullOrWhiteSpace($statusDir)) {
+      New-Item -ItemType Directory -Force -Path $statusDir *>$null
+    }
+    $jsonText = ($script:LaunchStatus | ConvertTo-Json -Depth 8)
+    $tmpPath = "$($script:StatusPath).tmp"
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($tmpPath, $jsonText, $utf8NoBom)
+    Move-Item -Path $tmpPath -Destination $script:StatusPath -Force
+  } catch {
+    # Keep launcher running even if status file write fails.
+  }
+}
+
+function Set-LauncherPhase([string]$phase, [string]$message) {
+  $script:LaunchStatus.phase = $phase
+  $script:LaunchStatus.message = $message
+  Write-StatusFile
+}
+
+function Set-ComponentState([string]$name, [string]$state, [int]$processId = 0, [string]$message = "") {
+  if (-not $script:LaunchStatus.components.Contains($name)) {
+    return
+  }
+  $script:LaunchStatus.components[$name].state = $state
+  $script:LaunchStatus.components[$name].pid = $processId
+  $script:LaunchStatus.components[$name].message = $message
+  Write-StatusFile
+}
+
+function Resolve-ModelPath {
+  param(
+    [string]$RootDir,
+    [string]$RequestedPath
+  )
+
+  if (-not [string]::IsNullOrWhiteSpace($RequestedPath)) {
+    $candidate = $RequestedPath
+    if (-not [System.IO.Path]::IsPathRooted($candidate)) {
+      $candidate = Join-Path $RootDir $candidate
+    }
+    if (Test-Path $candidate) {
+      return (Resolve-Path $candidate).Path
+    }
+
+    $leaf = [System.IO.Path]::GetFileName($RequestedPath)
+    if ($leaf -ieq "fbcsp_lda.joblib") {
+      $latest = Get-ChildItem -Path $RootDir -Filter "fbcsp_lda*.joblib" -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+      if ($latest) {
+        return $latest.FullName
+      }
+      throw "Model fbcsp_lda.joblib was requested but no matching model exists in project root. Train a model first or pass -ModelPath to an existing .joblib file."
+    }
+
+    throw "Provided model path does not exist: $candidate"
+  }
+
+  $defaultModel = Join-Path $RootDir "fbcsp_lda.joblib"
+  if (Test-Path $defaultModel) {
+    return (Resolve-Path $defaultModel).Path
+  }
+
+  $latestFallback = Get-ChildItem -Path $RootDir -Filter "fbcsp_lda*.joblib" -File -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+  if ($latestFallback) {
+    return $latestFallback.FullName
+  }
+
+  throw "No model file found in project root. Expected fbcsp_lda.joblib or fbcsp_lda_*.joblib. Train a model first or pass -ModelPath to an existing .joblib file."
 }
 
 function Start-PythonComponent {
@@ -44,6 +147,7 @@ function Start-PythonComponent {
 }
 
 if (-not (Test-IsAdmin)) {
+  Set-LauncherPhase "elevating" "Requesting administrator privileges (UAC)"
   Write-Host "Requesting administrator privileges (UAC)..." -ForegroundColor Yellow
 
   $selfPath = $PSCommandPath
@@ -54,88 +158,92 @@ if (-not (Test-IsAdmin)) {
   if ($NoOverlayFollow) {
     $elevateArgs += "-NoOverlayFollow"
   }
+  if (-not [string]::IsNullOrWhiteSpace($StatusFile)) {
+    $elevateArgs += @("-StatusFile", "`"$StatusFile`"")
+  }
 
   Start-Process -FilePath "powershell.exe" -Verb RunAs -ArgumentList $elevateArgs
   exit 0
 }
 
-$ROOT_DIR = Split-Path -Parent $PSCommandPath
-$PARENT_DIR = Split-Path -Parent $ROOT_DIR
+$script:LaunchStatus.admin = $true
+Set-LauncherPhase "admin" "Running as administrator"
 
-$pythonCandidates = @(
-  (Join-Path $ROOT_DIR ".venv\Scripts\python.exe"),
-  (Join-Path $PARENT_DIR ".venv\Scripts\python.exe")
-)
+try {
+  $ROOT_DIR = Split-Path -Parent $PSCommandPath
+  $PARENT_DIR = Split-Path -Parent $ROOT_DIR
 
-$PYTHON_EXE = $pythonCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-if (-not $PYTHON_EXE) {
-  throw "Python executable not found. Checked: $($pythonCandidates -join ', ')"
-}
+  $pythonCandidates = @(
+    (Join-Path $ROOT_DIR ".venv\Scripts\python.exe"),
+    (Join-Path $PARENT_DIR ".venv\Scripts\python.exe")
+  )
 
-$OVERLAY_SCRIPT = Join-Path $ROOT_DIR "scripts\gamepad_overlay.py"
-$GYRO_SCRIPT = Join-Path $ROOT_DIR "scripts\gyro_detector.py"
-$BLINK_SCRIPT = Join-Path $ROOT_DIR "scripts\blink_detector.py"
-$CLASSIFIER_SCRIPT = Join-Path $ROOT_DIR "scripts\real_time_classifier.py"
-$STATE_FILE = Join-Path $ROOT_DIR "gamepad_state.json"
-
-$requiredScripts = @($OVERLAY_SCRIPT, $GYRO_SCRIPT, $BLINK_SCRIPT, $CLASSIFIER_SCRIPT)
-foreach ($scriptPath in $requiredScripts) {
-  if (-not (Test-Path $scriptPath)) {
-    throw "Required script not found: $scriptPath"
+  $PYTHON_EXE = $pythonCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+  if (-not $PYTHON_EXE) {
+    throw "Python executable not found. Checked: $($pythonCandidates -join ', ')"
   }
-}
 
-if ([string]::IsNullOrWhiteSpace($ModelPath)) {
-  $defaultModel = Join-Path $ROOT_DIR "fbcsp_lda.joblib"
-  if (Test-Path $defaultModel) {
-    $ModelPath = $defaultModel
-  }
-}
+  $OVERLAY_SCRIPT = Join-Path $ROOT_DIR "scripts\gamepad_overlay.py"
+  $GYRO_SCRIPT = Join-Path $ROOT_DIR "scripts\gyro_detector.py"
+  $BLINK_SCRIPT = Join-Path $ROOT_DIR "scripts\blink_detector.py"
+  $CLASSIFIER_SCRIPT = Join-Path $ROOT_DIR "scripts\real_time_classifier.py"
+  $STATE_FILE = Join-Path $ROOT_DIR "gamepad_state.json"
 
-Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "MindPlay Master Launcher (Admin)" -ForegroundColor Cyan
-Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "Project: $ROOT_DIR"
-Write-Host "Python:  $PYTHON_EXE"
-if (-not [string]::IsNullOrWhiteSpace($ModelPath)) {
-  Write-Host "Model:   $ModelPath"
-} else {
-  Write-Host "Model:   <not provided; real_time_classifier will use its default>" -ForegroundColor Yellow
-}
-Write-Host ""
-
-Write-Host "Checking required modules..." -ForegroundColor Cyan
-$moduleToPackage = @{
-  "wx" = "wxPython"
-  "numpy" = "numpy"
-  "pylsl" = "pylsl"
-  "scipy" = "scipy"
-}
-$missingPackages = @()
-foreach ($module in $moduleToPackage.Keys) {
-  & $PYTHON_EXE -c "import $module" *>$null
-  if ($LASTEXITCODE -ne 0) {
-    $missingPackages += $moduleToPackage[$module]
-  }
-}
-
-if ($missingPackages.Count -gt 0) {
-  $missingPackages = $missingPackages | Select-Object -Unique
-  Write-Host "Installing missing packages: $($missingPackages -join ', ')" -ForegroundColor Yellow
-  foreach ($package in $missingPackages) {
-    & $PYTHON_EXE -m pip install $package
-    if ($LASTEXITCODE -ne 0) {
-      throw "Failed to install required package: $package"
+  $requiredScripts = @($OVERLAY_SCRIPT, $GYRO_SCRIPT, $BLINK_SCRIPT, $CLASSIFIER_SCRIPT)
+  foreach ($scriptPath in $requiredScripts) {
+    if (-not (Test-Path $scriptPath)) {
+      throw "Required script not found: $scriptPath"
     }
   }
-}
 
-$overlayArgs = @("--state-file", $STATE_FILE)
-if (-not $NoOverlayFollow) {
-  $overlayArgs += "--follow-active-window"
-}
+  $ModelPath = Resolve-ModelPath -RootDir $ROOT_DIR -RequestedPath $ModelPath
 
-$gyroArgs = @(
+  Write-Host "============================================================" -ForegroundColor Cyan
+  Write-Host "MindPlay Master Launcher (Admin)" -ForegroundColor Cyan
+  Write-Host "============================================================" -ForegroundColor Cyan
+  Write-Host "Project: $ROOT_DIR"
+  Write-Host "Python:  $PYTHON_EXE"
+  if (-not [string]::IsNullOrWhiteSpace($ModelPath)) {
+    Write-Host "Model:   $ModelPath"
+  } else {
+    Write-Host "Model:   <not provided; real_time_classifier will use its default>" -ForegroundColor Yellow
+  }
+  Write-Host ""
+  Set-LauncherPhase "checking_dependencies" "Checking required modules"
+
+  Write-Host "Checking required modules..." -ForegroundColor Cyan
+  $moduleToPackage = @{
+    "wx" = "wxPython"
+    "numpy" = "numpy"
+    "pylsl" = "pylsl"
+    "scipy" = "scipy"
+  }
+  $missingPackages = @()
+  foreach ($module in $moduleToPackage.Keys) {
+    & $PYTHON_EXE -c "import $module" *>$null
+    if ($LASTEXITCODE -ne 0) {
+      $missingPackages += $moduleToPackage[$module]
+    }
+  }
+
+  if ($missingPackages.Count -gt 0) {
+    $missingPackages = $missingPackages | Select-Object -Unique
+    Set-LauncherPhase "installing" "Installing missing packages: $($missingPackages -join ', ')"
+    Write-Host "Installing missing packages: $($missingPackages -join ', ')" -ForegroundColor Yellow
+    foreach ($package in $missingPackages) {
+      & $PYTHON_EXE -m pip install $package
+      if ($LASTEXITCODE -ne 0) {
+        throw "Failed to install required package: $package"
+      }
+    }
+  }
+
+  $overlayArgs = @("--state-file", $STATE_FILE)
+  if (-not $NoOverlayFollow) {
+    $overlayArgs += "--follow-active-window"
+  }
+
+  $gyroArgs = @(
   "--gyro-channels", "5,6,7",
   "--sfreq", "500",
   "--scale-factor", "0.25",
@@ -153,17 +261,17 @@ $gyroArgs = @(
   "--output-keys",
   "--verbose",
   "--overlay-state-file", $STATE_FILE
-)
+  )
 
-$blinkArgs = @(
+  $blinkArgs = @(
   "--sfreq", "500",
   "--picks", "Fp1,Fp2",
   "--window", "0.5",
   "--threshold-uv", "80",
   "--refractory", "0.8"
-)
+  )
 
-$classifierArgs = @(
+  $classifierArgs = @(
   "--sfreq", "500",
   "--window", "3.0",
   "--step", "0.5",
@@ -172,35 +280,53 @@ $classifierArgs = @(
   "--class-names", "0:rest,1:hand_mi",
   "--hand-mi-threshold", "0.97",
   "--hand-mi-consecutive", "3"
-)
-if (-not [string]::IsNullOrWhiteSpace($ModelPath)) {
-  if (-not (Test-Path $ModelPath)) {
-    throw "Provided model path does not exist: $ModelPath"
-  }
+  )
   $classifierArgs += @("--model", $ModelPath)
+
+  Set-LauncherPhase "starting" "Launching overlay"
+  Set-ComponentState "overlay" "starting" 0 "Launching overlay process"
+  Write-Host "Starting overlay..." -ForegroundColor Green
+  $overlayProc = Start-PythonComponent -Title "MindPlay Overlay" -PythonExe $PYTHON_EXE -ScriptPath $OVERLAY_SCRIPT -Args $overlayArgs -WorkingDirectory $ROOT_DIR
+  Set-ComponentState "overlay" "running" $overlayProc.Id "Overlay started"
+  Start-Sleep -Seconds 1
+
+  Set-LauncherPhase "starting" "Launching gyro detector"
+  Set-ComponentState "gyro" "starting" 0 "Launching gyro process"
+  Write-Host "Starting gyro detector..." -ForegroundColor Green
+  $gyroProc = Start-PythonComponent -Title "MindPlay Gyro Detector" -PythonExe $PYTHON_EXE -ScriptPath $GYRO_SCRIPT -Args $gyroArgs -WorkingDirectory $ROOT_DIR
+  Set-ComponentState "gyro" "running" $gyroProc.Id "Gyro started"
+  Start-Sleep -Seconds 1
+
+  Set-LauncherPhase "starting" "Launching blink detector"
+  Set-ComponentState "blink" "starting" 0 "Launching blink process"
+  Write-Host "Starting blink detector..." -ForegroundColor Green
+  $blinkProc = Start-PythonComponent -Title "MindPlay Blink Detector" -PythonExe $PYTHON_EXE -ScriptPath $BLINK_SCRIPT -Args $blinkArgs -WorkingDirectory $ROOT_DIR
+  Set-ComponentState "blink" "running" $blinkProc.Id "Blink started"
+  Start-Sleep -Seconds 1
+
+  Set-LauncherPhase "starting" "Launching real-time classifier"
+  Set-ComponentState "classifier" "starting" 0 "Launching classifier process"
+  Write-Host "Starting real-time classifier..." -ForegroundColor Green
+  $classifierProc = Start-PythonComponent -Title "MindPlay Real-Time Classifier" -PythonExe $PYTHON_EXE -ScriptPath $CLASSIFIER_SCRIPT -Args $classifierArgs -WorkingDirectory $ROOT_DIR
+  Set-ComponentState "classifier" "running" $classifierProc.Id "Classifier started"
+
+  Set-LauncherPhase "ready" "All components launched in admin mode"
+  Write-Host ""
+  Write-Host "All MindPlay components launched in admin mode." -ForegroundColor Green
+  Write-Host "Overlay PID:    $($overlayProc.Id)"
+  Write-Host "Gyro PID:       $($gyroProc.Id)"
+  Write-Host "Blink PID:      $($blinkProc.Id)"
+  Write-Host "Classifier PID: $($classifierProc.Id)"
+  Write-Host ""
+  Write-Host "Classifier rule active: hand_mi only when >97% for 3 consecutive windows; otherwise rest(0)." -ForegroundColor Cyan
+  Write-Host "Use Ctrl+C in each component window to stop it." -ForegroundColor Yellow
 }
-
-Write-Host "Starting overlay..." -ForegroundColor Green
-$overlayProc = Start-PythonComponent -Title "MindPlay Overlay" -PythonExe $PYTHON_EXE -ScriptPath $OVERLAY_SCRIPT -Args $overlayArgs -WorkingDirectory $ROOT_DIR
-Start-Sleep -Seconds 1
-
-Write-Host "Starting gyro detector..." -ForegroundColor Green
-$gyroProc = Start-PythonComponent -Title "MindPlay Gyro Detector" -PythonExe $PYTHON_EXE -ScriptPath $GYRO_SCRIPT -Args $gyroArgs -WorkingDirectory $ROOT_DIR
-Start-Sleep -Seconds 1
-
-Write-Host "Starting blink detector..." -ForegroundColor Green
-$blinkProc = Start-PythonComponent -Title "MindPlay Blink Detector" -PythonExe $PYTHON_EXE -ScriptPath $BLINK_SCRIPT -Args $blinkArgs -WorkingDirectory $ROOT_DIR
-Start-Sleep -Seconds 1
-
-Write-Host "Starting real-time classifier..." -ForegroundColor Green
-$classifierProc = Start-PythonComponent -Title "MindPlay Real-Time Classifier" -PythonExe $PYTHON_EXE -ScriptPath $CLASSIFIER_SCRIPT -Args $classifierArgs -WorkingDirectory $ROOT_DIR
-
-Write-Host ""
-Write-Host "All MindPlay components launched in admin mode." -ForegroundColor Green
-Write-Host "Overlay PID:    $($overlayProc.Id)"
-Write-Host "Gyro PID:       $($gyroProc.Id)"
-Write-Host "Blink PID:      $($blinkProc.Id)"
-Write-Host "Classifier PID: $($classifierProc.Id)"
-Write-Host ""
-Write-Host "Classifier rule active: hand_mi only when >97% for 3 consecutive windows; otherwise rest(0)." -ForegroundColor Cyan
-Write-Host "Use Ctrl+C in each component window to stop it." -ForegroundColor Yellow
+catch {
+  $msg = $_.Exception.Message
+  Set-LauncherPhase "error" $msg
+  Set-ComponentState "overlay" "error" 0 "Launcher failed before completion"
+  Set-ComponentState "gyro" "error" 0 "Launcher failed before completion"
+  Set-ComponentState "blink" "error" 0 "Launcher failed before completion"
+  Set-ComponentState "classifier" "error" 0 "Launcher failed before completion"
+  throw
+}

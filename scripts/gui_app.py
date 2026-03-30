@@ -9,19 +9,20 @@ Features:
 - IDE-style dark console with styled output.
 
 Run:
-  python .\scripts\gui_app.py
+    python .\\scripts\\gui_app.py
 """
 from __future__ import annotations
 
+import json
 import re
 import sys
 import shlex
 import subprocess
 import queue
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QProcess
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QProcess, QTimer
 from PyQt6.QtGui import QFont, QColor, QLinearGradient, QPalette, QBrush
 from PyQt6.QtWidgets import (
     QApplication,
@@ -39,12 +40,16 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QGraphicsDropShadowEffect,
     QCheckBox,
+    QScrollArea,
+    QSizePolicy,
 )
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 DATA_DIR = ROOT / "data"
+MASTER_SCRIPT = ROOT / "start_mindplay_master.ps1"
+MASTER_STATUS_FILE = ROOT / "master_launcher_status.json"
 
 
 class TrainingWorker(QThread):
@@ -224,6 +229,12 @@ class EEGApp(QMainWindow):
         self.rt_process: Optional[QProcess] = None
         self.blink_process: Optional[QProcess] = None
         self.gyro_process: Optional[QProcess] = None
+        self.master_process: Optional[QProcess] = None
+        self.master_status_timer = QTimer(self)
+        self.master_status_timer.setInterval(700)
+        self.master_status_timer.timeout.connect(self._poll_master_status)
+        self.master_status_file: Path = MASTER_STATUS_FILE
+        self._last_master_snapshot: str = ""
         self._nav_buttons: dict[str, QPushButton] = {}
 
         self._build_ui()
@@ -253,12 +264,14 @@ class EEGApp(QMainWindow):
         self.rt_page = self._create_mi_page()
         self.blink_page = self._create_blink_page()
         self.gyro_page = self._create_gyro_page()
+        self.system_page = self._create_system_page()
 
         self.stack.addWidget(self.menu_page)
         self.stack.addWidget(self.train_page)
         self.stack.addWidget(self.rt_page)
         self.stack.addWidget(self.blink_page)
         self.stack.addWidget(self.gyro_page)
+        self.stack.addWidget(self.system_page)
         root.addWidget(content, 1)
         self.show_menu()
 
@@ -297,6 +310,7 @@ class EEGApp(QMainWindow):
         n_lay.setSpacing(2)
         for key, label in [
             ("menu", "\u25C8   Dashboard"),
+            ("system", "\u2692   System Launcher"),
             ("training", "\u2699   Model Training"),
             ("realtime", "\u25C9   MI Classifier"),
             ("blink", "\u25C9   Blink Detection"),
@@ -310,6 +324,7 @@ class EEGApp(QMainWindow):
             self._nav_buttons[key] = btn
             n_lay.addWidget(btn)
         self._nav_buttons["menu"].clicked.connect(self.show_menu)
+        self._nav_buttons["system"].clicked.connect(self.show_system)
         self._nav_buttons["training"].clicked.connect(self.show_training)
         self._nav_buttons["realtime"].clicked.connect(self.show_realtime)
         self._nav_buttons["blink"].clicked.connect(self.show_blink)
@@ -366,6 +381,51 @@ class EEGApp(QMainWindow):
         c_lay.addWidget(btn)
         return card
 
+    def _make_num_input(self, default_text: str, width: int = 120) -> QLineEdit:
+        inp = QLineEdit(default_text)
+        inp.setObjectName("numericInput")
+        inp.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        inp.setMinimumWidth(width)
+        inp.setMaximumWidth(width + 72)
+        inp.setMinimumHeight(38)
+        inp.setFont(QFont("Consolas", 11))
+        return inp
+
+    def _style_param_grid(self, grid: QGridLayout, columns: int) -> None:
+        # Shared spacing for dense parameter forms so labels/inputs remain readable.
+        grid.setContentsMargins(26, 22, 26, 22)
+        grid.setHorizontalSpacing(20)
+        grid.setVerticalSpacing(16)
+
+        if columns == 4:
+            grid.setColumnStretch(1, 2)
+            grid.setColumnStretch(3, 2)
+        elif columns == 6:
+            grid.setColumnStretch(1, 2)
+            grid.setColumnStretch(3, 2)
+            grid.setColumnStretch(5, 2)
+
+    def _wrap_scroll_page(self, content: QWidget) -> QScrollArea:
+        # Let page content keep natural size and scroll when viewport is smaller.
+        content.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+
+        host = QWidget()
+        host.setObjectName("contentArea")
+        host_lay = QVBoxLayout(host)
+        host_lay.setContentsMargins(0, 0, 0, 0)
+        host_lay.setSpacing(0)
+        host_lay.addWidget(content)
+        host_lay.addStretch()
+
+        scroll = QScrollArea()
+        scroll.setObjectName("pageScroll")
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setWidget(host)
+        return scroll
+
     def _create_menu_page(self) -> QWidget:
         page = QWidget()
         page.setObjectName("contentArea")
@@ -397,36 +457,51 @@ class EEGApp(QMainWindow):
         lay.addWidget(hero)
 
         # Feature cards
-        cards = QHBoxLayout()
-        cards.setSpacing(24)
-        cards.addWidget(self._make_card(
-            icon="\u2699\uFE0F", icon_obj="cardIconBadge",
-            title="Model Training",
-            desc="Record trials via LSL, train an FBCSP+LDA\nclassifier, and evaluate performance metrics\nwith cross-validation.",
-            btn_text="Launch Training  \u2192", btn_obj="cardBtn",
-            on_click=self.show_training,
-        ))
-        cards.addWidget(self._make_card(
-            icon="\U0001F9E0", icon_obj="cardIconBadgeTeal",
-            title="Real-Time BCI",
-            desc="Load a trained model and stream real-time\nEEG classification results for neuro-\nfeedback applications.",
-            btn_text="Launch Session  \u2192", btn_obj="cardBtnTeal",
-            on_click=self.show_realtime,
-        ))
-        cards.addWidget(self._make_card(
-            icon="\u25CE", icon_obj="cardIconBadgeSun",
-            title="Blink Detection",
-            desc="Detect intentional blinks from frontal EEG\nchannels and trigger optional key actions\nin real time.",
-            btn_text="Open Blink Page  \u2192", btn_obj="cardBtnSun",
-            on_click=self.show_blink,
-        ))
-        cards.addWidget(self._make_card(
-            icon="\u25EC", icon_obj="cardIconBadgeSky",
-            title="Gyro Detection",
-            desc="Detect head movement from gyro velocity\nwith threshold, deadzone, and key\nmapping controls.",
-            btn_text="Open Gyro Page  \u2192", btn_obj="cardBtnSky",
-            on_click=self.show_gyro,
-        ))
+        cards = QGridLayout()
+        cards.setHorizontalSpacing(24)
+        cards.setVerticalSpacing(24)
+        card_widgets = [
+            self._make_card(
+                icon="\u2692\uFE0F", icon_obj="cardIconBadge",
+                title="Master Launcher",
+                desc="Start overlay, gyro, blink, and MI classifier\nin admin mode with one click and live\nreadiness status.",
+                btn_text="Open System Launcher  \u2192", btn_obj="cardBtn",
+                on_click=self.show_system,
+            ),
+            self._make_card(
+                icon="\u2699\uFE0F", icon_obj="cardIconBadge",
+                title="Model Training",
+                desc="Record trials via LSL, train an FBCSP+LDA\nclassifier, and evaluate performance metrics\nwith cross-validation.",
+                btn_text="Launch Training  \u2192", btn_obj="cardBtn",
+                on_click=self.show_training,
+            ),
+            self._make_card(
+                icon="\U0001F9E0", icon_obj="cardIconBadgeTeal",
+                title="Real-Time BCI",
+                desc="Load a trained model and stream real-time\nEEG classification results for neuro-\nfeedback applications.",
+                btn_text="Launch Session  \u2192", btn_obj="cardBtnTeal",
+                on_click=self.show_realtime,
+            ),
+            self._make_card(
+                icon="\u25CE", icon_obj="cardIconBadgeSun",
+                title="Blink Detection",
+                desc="Detect intentional blinks from frontal EEG\nchannels and trigger optional key actions\nin real time.",
+                btn_text="Open Blink Page  \u2192", btn_obj="cardBtnSun",
+                on_click=self.show_blink,
+            ),
+            self._make_card(
+                icon="\u25EC", icon_obj="cardIconBadgeSky",
+                title="Gyro Detection",
+                desc="Detect head movement from gyro velocity\nwith threshold, deadzone, and key\nmapping controls.",
+                btn_text="Open Gyro Page  \u2192", btn_obj="cardBtnSky",
+                on_click=self.show_gyro,
+            ),
+        ]
+        for i, card in enumerate(card_widgets):
+            cards.addWidget(card, i // 3, i % 3)
+        cards.setColumnStretch(0, 1)
+        cards.setColumnStretch(1, 1)
+        cards.setColumnStretch(2, 1)
         lay.addLayout(cards)
         lay.addStretch()
 
@@ -434,7 +509,118 @@ class EEGApp(QMainWindow):
         footer.setObjectName("footerLabel")
         footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(footer)
-        return page
+        return self._wrap_scroll_page(page)
+
+    def _create_system_page(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("contentArea")
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(40, 32, 40, 30)
+        lay.setSpacing(18)
+
+        header = QHBoxLayout()
+        title_col = QVBoxLayout()
+        title_col.setSpacing(4)
+        pt = QLabel("System Launcher")
+        pt.setObjectName("pageTitle")
+        title_col.addWidget(pt)
+        pd = QLabel("Launch overlay + gyro + blink + real-time classifier in admin mode and monitor readiness")
+        pd.setObjectName("pageDesc")
+        title_col.addWidget(pd)
+        header.addLayout(title_col)
+        header.addStretch()
+        btn_back = QPushButton("\u2190 Back")
+        btn_back.setObjectName("ghost")
+        btn_back.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_back.clicked.connect(self.show_menu)
+        header.addWidget(btn_back)
+        lay.addLayout(header)
+
+        ctrl = QFrame()
+        ctrl.setObjectName("controlCard")
+        ctrl_lay = QGridLayout(ctrl)
+        ctrl_lay.setContentsMargins(20, 14, 20, 14)
+        ctrl_lay.setHorizontalSpacing(10)
+        ctrl_lay.setVerticalSpacing(8)
+
+        ctrl_lay.addWidget(QLabel("Model path"), 0, 0)
+        self.master_model_input = QLineEdit("")
+        self.master_model_input.setPlaceholderText("Optional model path (auto-picks latest fbcsp_lda*.joblib if blank)")
+        ctrl_lay.addWidget(self.master_model_input, 0, 1, 1, 3)
+
+        self.master_no_follow_cb = QCheckBox("Pin overlay to screen (disable follow-active-window)")
+        ctrl_lay.addWidget(self.master_no_follow_cb, 1, 0, 1, 2)
+
+        self.btn_master_start = QPushButton("\u25B6  Start Master (Admin)")
+        self.btn_master_start.setObjectName("primary")
+        self.btn_master_start.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_master_start.clicked.connect(self.start_master_launcher)
+        ctrl_lay.addWidget(self.btn_master_start, 1, 2)
+
+        self.btn_master_refresh = QPushButton("\u21BB  Refresh Status")
+        self.btn_master_refresh.setObjectName("ghost")
+        self.btn_master_refresh.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_master_refresh.clicked.connect(self._poll_master_status)
+        ctrl_lay.addWidget(self.btn_master_refresh, 1, 3)
+
+        lay.addWidget(ctrl)
+
+        self.master_status = QLabel("Status: Idle")
+        self.master_status.setObjectName("statusPill")
+        lay.addWidget(self.master_status)
+
+        comp = QFrame()
+        comp.setObjectName("controlCard")
+        comp_lay = QGridLayout(comp)
+        comp_lay.setContentsMargins(20, 14, 20, 14)
+        comp_lay.setHorizontalSpacing(14)
+        comp_lay.setVerticalSpacing(8)
+
+        comp_lay.addWidget(QLabel("Overlay"), 0, 0)
+        self.master_overlay_lbl = QLabel("pending")
+        self.master_overlay_lbl.setObjectName("statusPill")
+        comp_lay.addWidget(self.master_overlay_lbl, 0, 1)
+
+        comp_lay.addWidget(QLabel("Gyro"), 0, 2)
+        self.master_gyro_lbl = QLabel("pending")
+        self.master_gyro_lbl.setObjectName("statusPill")
+        comp_lay.addWidget(self.master_gyro_lbl, 0, 3)
+
+        comp_lay.addWidget(QLabel("Blink"), 1, 0)
+        self.master_blink_lbl = QLabel("pending")
+        self.master_blink_lbl.setObjectName("statusPill")
+        comp_lay.addWidget(self.master_blink_lbl, 1, 1)
+
+        comp_lay.addWidget(QLabel("Classifier"), 1, 2)
+        self.master_classifier_lbl = QLabel("pending")
+        self.master_classifier_lbl.setObjectName("statusPill")
+        comp_lay.addWidget(self.master_classifier_lbl, 1, 3)
+
+        self._master_component_widgets: Dict[str, QLabel] = {
+            "overlay": self.master_overlay_lbl,
+            "gyro": self.master_gyro_lbl,
+            "blink": self.master_blink_lbl,
+            "classifier": self.master_classifier_lbl,
+        }
+        lay.addWidget(comp)
+
+        console_card = QFrame()
+        console_card.setObjectName("consoleCard")
+        c_lay = QVBoxLayout(console_card)
+        c_lay.setContentsMargins(0, 0, 0, 0)
+        c_lay.setSpacing(0)
+        c_header = QLabel("  \u25CF  Master Launcher Status")
+        c_header.setObjectName("consoleHeader")
+        c_header.setFixedHeight(36)
+        c_lay.addWidget(c_header)
+        self.master_log = QTextEdit()
+        self.master_log.setReadOnly(True)
+        self.master_log.setObjectName("console")
+        c_lay.addWidget(self.master_log)
+        console_card.setMinimumHeight(280)
+        lay.addWidget(console_card)
+
+        return self._wrap_scroll_page(page)
 
     def _create_training_page(self) -> QWidget:
         page = QWidget()
@@ -562,8 +748,9 @@ class EEGApp(QMainWindow):
         shadow_con.setYOffset(6)
         shadow_con.setColor(QColor(0, 0, 0, 15))
         console_card.setGraphicsEffect(shadow_con)
-        lay.addWidget(console_card, 1)
-        return page
+        console_card.setMinimumHeight(300)
+        lay.addWidget(console_card)
+        return self._wrap_scroll_page(page)
 
     def _create_mi_page(self) -> QWidget:
         page = QWidget()
@@ -630,27 +817,39 @@ class EEGApp(QMainWindow):
         cfg = QFrame()
         cfg.setObjectName("controlCard")
         cfg_lay = QGridLayout(cfg)
-        cfg_lay.setContentsMargins(20, 14, 20, 14)
-        cfg_lay.setHorizontalSpacing(10)
-        cfg_lay.setVerticalSpacing(8)
-        cfg_lay.addWidget(QLabel("MI sfreq"), 0, 0)
-        self.mi_sfreq_input = QLineEdit("500")
-        cfg_lay.addWidget(self.mi_sfreq_input, 0, 1)
-        cfg_lay.addWidget(QLabel("Window (s)"), 0, 2)
-        self.mi_window_input = QLineEdit("4.0")
-        cfg_lay.addWidget(self.mi_window_input, 0, 3)
-        cfg_lay.addWidget(QLabel("Step (s)"), 1, 0)
-        self.mi_step_input = QLineEdit("0.5")
-        cfg_lay.addWidget(self.mi_step_input, 1, 1)
-        cfg_lay.addWidget(QLabel("Vote-k"), 1, 2)
-        self.mi_vote_input = QLineEdit("5")
-        cfg_lay.addWidget(self.mi_vote_input, 1, 3)
-        cfg_lay.addWidget(QLabel("Picks"), 2, 0)
+        self._style_param_grid(cfg_lay, columns=4)
+        cfg_lay.addWidget(QLabel("Model path"), 0, 0)
+        self.mi_model_input = QLineEdit("")
+        self.mi_model_input.setPlaceholderText("Optional custom model path (default: fbcsp_lda_<subject>.joblib)")
+        cfg_lay.addWidget(self.mi_model_input, 0, 1, 1, 3)
+        cfg_lay.addWidget(QLabel("MI sfreq"), 1, 0)
+        self.mi_sfreq_input = self._make_num_input("500")
+        cfg_lay.addWidget(self.mi_sfreq_input, 1, 1)
+        cfg_lay.addWidget(QLabel("Window (s)"), 1, 2)
+        self.mi_window_input = self._make_num_input("4.0")
+        cfg_lay.addWidget(self.mi_window_input, 1, 3)
+        cfg_lay.addWidget(QLabel("Step (s)"), 2, 0)
+        self.mi_step_input = self._make_num_input("0.5")
+        cfg_lay.addWidget(self.mi_step_input, 2, 1)
+        cfg_lay.addWidget(QLabel("Vote-k"), 2, 2)
+        self.mi_vote_input = self._make_num_input("5")
+        cfg_lay.addWidget(self.mi_vote_input, 2, 3)
+        cfg_lay.addWidget(QLabel("Picks"), 3, 0)
         self.mi_picks_input = QLineEdit("C3,Cz,C4")
-        cfg_lay.addWidget(self.mi_picks_input, 2, 1)
-        cfg_lay.addWidget(QLabel("Class names"), 2, 2)
-        self.mi_classes_input = QLineEdit("0:hand_mi,1:rest")
-        cfg_lay.addWidget(self.mi_classes_input, 2, 3)
+        cfg_lay.addWidget(self.mi_picks_input, 3, 1)
+        cfg_lay.addWidget(QLabel("Class names"), 3, 2)
+        self.mi_classes_input = QLineEdit("0:rest,1:hand_mi")
+        cfg_lay.addWidget(self.mi_classes_input, 3, 3)
+        cfg_lay.addWidget(QLabel("Hand MI threshold"), 4, 0)
+        self.mi_hand_thr_input = self._make_num_input("0.97")
+        cfg_lay.addWidget(self.mi_hand_thr_input, 4, 1)
+        cfg_lay.addWidget(QLabel("Consecutive windows"), 4, 2)
+        self.mi_hand_consec_input = self._make_num_input("3")
+        cfg_lay.addWidget(self.mi_hand_consec_input, 4, 3)
+        self.mi_scale_uv_cb = QCheckBox("Scale incoming values to uV")
+        cfg_lay.addWidget(self.mi_scale_uv_cb, 5, 0, 1, 2)
+        self.mi_block_cb = QCheckBox("Use non-overlapping windows (block mode)")
+        cfg_lay.addWidget(self.mi_block_cb, 5, 2, 1, 2)
         lay.addWidget(cfg)
 
         self.mi_status = QLabel("Status: Idle")
@@ -677,8 +876,9 @@ class EEGApp(QMainWindow):
         shadow_con.setYOffset(6)
         shadow_con.setColor(QColor(0, 0, 0, 15))
         console_card.setGraphicsEffect(shadow_con)
-        lay.addWidget(console_card, 1)
-        return page
+        console_card.setMinimumHeight(280)
+        lay.addWidget(console_card)
+        return self._wrap_scroll_page(page)
 
     def _create_blink_page(self) -> QWidget:
         page = QWidget()
@@ -726,9 +926,7 @@ class EEGApp(QMainWindow):
         cfg = QFrame()
         cfg.setObjectName("controlCard")
         cfg_lay = QGridLayout(cfg)
-        cfg_lay.setContentsMargins(20, 14, 20, 14)
-        cfg_lay.setHorizontalSpacing(10)
-        cfg_lay.setVerticalSpacing(8)
+        self._style_param_grid(cfg_lay, columns=4)
         cfg_lay.addWidget(QLabel("Blink sfreq"), 0, 0)
         self.blink_sfreq_input = QLineEdit("500")
         cfg_lay.addWidget(self.blink_sfreq_input, 0, 1)
@@ -772,8 +970,9 @@ class EEGApp(QMainWindow):
         self.blink_log.setReadOnly(True)
         self.blink_log.setObjectName("console")
         c_lay.addWidget(self.blink_log)
-        lay.addWidget(console_card, 1)
-        return page
+        console_card.setMinimumHeight(260)
+        lay.addWidget(console_card)
+        return self._wrap_scroll_page(page)
 
     def _create_gyro_page(self) -> QWidget:
         page = QWidget()
@@ -821,64 +1020,95 @@ class EEGApp(QMainWindow):
         cfg = QFrame()
         cfg.setObjectName("controlCard")
         cfg_lay = QGridLayout(cfg)
-        cfg_lay.setContentsMargins(20, 14, 20, 14)
-        cfg_lay.setHorizontalSpacing(10)
-        cfg_lay.setVerticalSpacing(8)
+        self._style_param_grid(cfg_lay, columns=4)
         cfg_lay.addWidget(QLabel("Gyro sfreq"), 0, 0)
-        self.gyro_sfreq_input = QLineEdit("500")
+        self.gyro_sfreq_input = self._make_num_input("500")
         cfg_lay.addWidget(self.gyro_sfreq_input, 0, 1)
         cfg_lay.addWidget(QLabel("Channels"), 0, 2)
-        self.gyro_channels_input = QLineEdit("0,1,2")
+        self.gyro_channels_input = QLineEdit("5,6,7")
         cfg_lay.addWidget(self.gyro_channels_input, 0, 3)
         cfg_lay.addWidget(QLabel("Stream type"), 1, 0)
         self.gyro_stream_type_input = QLineEdit("EEG")
         cfg_lay.addWidget(self.gyro_stream_type_input, 1, 1)
         cfg_lay.addWidget(QLabel("Scale factor"), 1, 2)
-        self.gyro_scale_input = QLineEdit("1.0")
+        self.gyro_scale_input = self._make_num_input("0.25")
         cfg_lay.addWidget(self.gyro_scale_input, 1, 3)
-        cfg_lay.addWidget(QLabel("Vel F/B/L/R"), 2, 0)
-        self.gyro_vel_f_input = QLineEdit("80")
+        cfg_lay.addWidget(QLabel("Vel Forward"), 2, 0)
+        self.gyro_vel_f_input = self._make_num_input("30")
         cfg_lay.addWidget(self.gyro_vel_f_input, 2, 1)
-        self.gyro_vel_b_input = QLineEdit("80")
-        cfg_lay.addWidget(self.gyro_vel_b_input, 2, 2)
-        self.gyro_vel_l_input = QLineEdit("100")
-        cfg_lay.addWidget(self.gyro_vel_l_input, 2, 3)
-        self.gyro_vel_r_input = QLineEdit("100")
-        cfg_lay.addWidget(self.gyro_vel_r_input, 2, 4)
-        cfg_lay.addWidget(QLabel("Return"), 3, 0)
-        self.gyro_vel_return_input = QLineEdit("20")
-        cfg_lay.addWidget(self.gyro_vel_return_input, 3, 1)
-        cfg_lay.addWidget(QLabel("Deadzone X/Y/Z"), 3, 2)
-        self.gyro_deadzone_x_input = QLineEdit("5")
-        cfg_lay.addWidget(self.gyro_deadzone_x_input, 3, 3)
-        self.gyro_deadzone_y_input = QLineEdit("5")
-        cfg_lay.addWidget(self.gyro_deadzone_y_input, 3, 4)
-        self.gyro_deadzone_z_input = QLineEdit("5")
-        cfg_lay.addWidget(self.gyro_deadzone_z_input, 3, 5)
-        cfg_lay.addWidget(QLabel("Calibration (s)"), 4, 0)
-        self.gyro_calib_input = QLineEdit("2.0")
-        cfg_lay.addWidget(self.gyro_calib_input, 4, 1)
-        cfg_lay.addWidget(QLabel("Smoothing"), 4, 2)
-        self.gyro_smoothing_input = QLineEdit("5")
-        cfg_lay.addWidget(self.gyro_smoothing_input, 4, 3)
-        cfg_lay.addWidget(QLabel("Key mapping"), 5, 0)
-        self.gyro_keymap_input = QLineEdit("forward:w,backward:s,left:a,right:d")
-        cfg_lay.addWidget(self.gyro_keymap_input, 5, 1, 1, 3)
+        cfg_lay.addWidget(QLabel("Vel Backward"), 2, 2)
+        self.gyro_vel_b_input = self._make_num_input("30")
+        cfg_lay.addWidget(self.gyro_vel_b_input, 2, 3)
+        cfg_lay.addWidget(QLabel("Vel Left"), 3, 0)
+        self.gyro_vel_l_input = self._make_num_input("80")
+        cfg_lay.addWidget(self.gyro_vel_l_input, 3, 1)
+        cfg_lay.addWidget(QLabel("Vel Right"), 3, 2)
+        self.gyro_vel_r_input = self._make_num_input("80")
+        cfg_lay.addWidget(self.gyro_vel_r_input, 3, 3)
+        cfg_lay.addWidget(QLabel("Vel Return"), 4, 0)
+        self.gyro_vel_return_input = self._make_num_input("120")
+        cfg_lay.addWidget(self.gyro_vel_return_input, 4, 1)
+
+        cfg_lay.addWidget(QLabel("Deadzone X"), 5, 0)
+        self.gyro_deadzone_x_input = self._make_num_input("5")
+        cfg_lay.addWidget(self.gyro_deadzone_x_input, 5, 1)
+        cfg_lay.addWidget(QLabel("Deadzone Y"), 5, 2)
+        self.gyro_deadzone_y_input = self._make_num_input("20")
+        cfg_lay.addWidget(self.gyro_deadzone_y_input, 5, 3)
+        cfg_lay.addWidget(QLabel("Deadzone Z"), 6, 0)
+        self.gyro_deadzone_z_input = self._make_num_input("15")
+        cfg_lay.addWidget(self.gyro_deadzone_z_input, 6, 1)
+
+        cfg_lay.addWidget(QLabel("Calibration (s)"), 6, 2)
+        self.gyro_calib_input = self._make_num_input("2.0")
+        cfg_lay.addWidget(self.gyro_calib_input, 6, 3)
+        cfg_lay.addWidget(QLabel("Smoothing"), 7, 0)
+        self.gyro_smoothing_input = self._make_num_input("14")
+        cfg_lay.addWidget(self.gyro_smoothing_input, 7, 1)
+        cfg_lay.addWidget(QLabel("Gamepad repeat"), 7, 2)
+        self.gyro_repeat_input = self._make_num_input("0.40")
+        cfg_lay.addWidget(self.gyro_repeat_input, 7, 3)
+
+        self.gyro_use_z_lr_cb = QCheckBox("Use Z axis for Left/Right")
+        self.gyro_use_z_lr_cb.setChecked(True)
+        cfg_lay.addWidget(self.gyro_use_z_lr_cb, 8, 0, 1, 2)
+        cfg_lay.addWidget(QLabel("Z Left threshold"), 8, 2)
+        self.gyro_z_left_input = self._make_num_input("20")
+        cfg_lay.addWidget(self.gyro_z_left_input, 8, 3)
+        cfg_lay.addWidget(QLabel("Z Right threshold"), 9, 0)
+        self.gyro_z_right_input = self._make_num_input("20")
+        cfg_lay.addWidget(self.gyro_z_right_input, 9, 1)
+
+        self.gyro_gamepad_mode_cb = QCheckBox("Gamepad mode")
+        self.gyro_gamepad_mode_cb.setChecked(True)
+        cfg_lay.addWidget(self.gyro_gamepad_mode_cb, 9, 2)
         self.gyro_output_keys_cb = QCheckBox("Output keypresses")
-        cfg_lay.addWidget(self.gyro_output_keys_cb, 5, 4)
+        self.gyro_output_keys_cb.setChecked(True)
+        cfg_lay.addWidget(self.gyro_output_keys_cb, 9, 3)
         self.gyro_verbose_cb = QCheckBox("Verbose")
-        cfg_lay.addWidget(self.gyro_verbose_cb, 5, 5)
+        self.gyro_verbose_cb.setChecked(True)
+        cfg_lay.addWidget(self.gyro_verbose_cb, 10, 0)
+
         self.gyro_drift_cb = QCheckBox("Enable drift correction")
-        cfg_lay.addWidget(self.gyro_drift_cb, 6, 0, 1, 2)
+        cfg_lay.addWidget(self.gyro_drift_cb, 10, 1, 1, 2)
+
+        cfg_lay.addWidget(QLabel("Overlay state file"), 11, 0)
+        self.gyro_overlay_state_input = QLineEdit(str((ROOT / "gamepad_state.json").resolve()))
+        cfg_lay.addWidget(self.gyro_overlay_state_input, 11, 1, 1, 3)
+
+        cfg_lay.addWidget(QLabel("Key mapping"), 12, 0)
+        self.gyro_keymap_input = QLineEdit("forward:w,backward:s,left:a,right:d")
+        cfg_lay.addWidget(self.gyro_keymap_input, 12, 1, 1, 3)
         self.gyro_invert_x_cb = QCheckBox("Invert X")
         self.gyro_invert_y_cb = QCheckBox("Invert Y")
         self.gyro_invert_z_cb = QCheckBox("Invert Z")
-        cfg_lay.addWidget(self.gyro_invert_x_cb, 6, 2)
-        cfg_lay.addWidget(self.gyro_invert_y_cb, 6, 3)
-        cfg_lay.addWidget(self.gyro_invert_z_cb, 6, 4)
+        cfg_lay.addWidget(self.gyro_invert_x_cb, 13, 0)
+        cfg_lay.addWidget(self.gyro_invert_y_cb, 13, 1)
+        cfg_lay.addWidget(self.gyro_invert_z_cb, 13, 2)
+        cfg_lay.addWidget(QLabel("Extra args"), 14, 0)
         self.gyro_extra_input = QLineEdit("")
         self.gyro_extra_input.setPlaceholderText("Extra gyro args (optional)")
-        cfg_lay.addWidget(self.gyro_extra_input, 6, 5)
+        cfg_lay.addWidget(self.gyro_extra_input, 14, 1, 1, 3)
         lay.addWidget(cfg)
 
         self.gyro_status = QLabel("Status: Idle")
@@ -898,8 +1128,9 @@ class EEGApp(QMainWindow):
         self.gyro_log.setReadOnly(True)
         self.gyro_log.setObjectName("console")
         c_lay.addWidget(self.gyro_log)
-        lay.addWidget(console_card, 1)
-        return page
+        console_card.setMinimumHeight(280)
+        lay.addWidget(console_card)
+        return self._wrap_scroll_page(page)
 
     def _apply_theme(self) -> None:
         self.setStyleSheet("""
@@ -984,14 +1215,24 @@ class EEGApp(QMainWindow):
             /* === CONTROLS === */
             QFrame#controlCard { background-color: #FFFFFF; border: 1px solid #E8ECF4; border-radius: 12px; }
             QLabel#inputLabel { font-weight: 600; color: #475569; font-size: 13px; }
-            QFrame#controlCard QLabel { color: #475569; }
+            QFrame#controlCard QLabel { color: #475569; font-size: 13px; font-weight: 600; }
             QFrame#controlCard QCheckBox { color: #475569; font-weight: 500; }
 
             QLineEdit {
                 background-color: #F8FAFC; border: 1.5px solid #E2E8F0;
                 border-radius: 8px; padding: 8px 14px; font-weight: 500; color: #1E293B;
+                min-height: 38px; font-size: 14px;
             }
             QLineEdit:focus { border: 1.5px solid #6C63FF; background-color: #FFFFFF; }
+
+            QLineEdit#numericInput {
+                font-family: 'Consolas', 'JetBrains Mono', 'Fira Code', monospace;
+                font-size: 14px;
+                font-weight: 600;
+                letter-spacing: 0px;
+                min-height: 38px;
+                padding: 8px 10px;
+            }
 
             QPushButton#primary {
                 background-color: #6C63FF; color: white; font-weight: 600;
@@ -1035,12 +1276,21 @@ class EEGApp(QMainWindow):
                 selection-background-color: #6C63FF; selection-color: white;
             }
 
-            /* === SCROLLBAR === */
-            QScrollBar:vertical { border: none; background: #151722; width: 10px; margin: 0; }
-            QScrollBar::handle:vertical { background: #3B3F5C; min-height: 20px; border-radius: 5px; margin: 2px; }
-            QScrollBar::handle:vertical:hover { background: #4F5477; }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
+            /* === PAGE SCROLLBARS === */
+            QScrollArea#pageScroll { border: none; background-color: #F0F2F8; }
+            QScrollArea#pageScroll QWidget#contentArea { background-color: #F0F2F8; }
+            QScrollArea#pageScroll QScrollBar:vertical { border: none; background: #E2E8F0; width: 12px; margin: 0; }
+            QScrollArea#pageScroll QScrollBar::handle:vertical { background: #94A3B8; min-height: 32px; border-radius: 6px; margin: 2px; }
+            QScrollArea#pageScroll QScrollBar::handle:vertical:hover { background: #64748B; }
+            QScrollArea#pageScroll QScrollBar::add-line:vertical, QScrollArea#pageScroll QScrollBar::sub-line:vertical { height: 0; }
+            QScrollArea#pageScroll QScrollBar::add-page:vertical, QScrollArea#pageScroll QScrollBar::sub-page:vertical { background: none; }
+
+            /* === CONSOLE SCROLLBARS === */
+            QTextEdit#console QScrollBar:vertical { border: none; background: #151722; width: 10px; margin: 0; }
+            QTextEdit#console QScrollBar::handle:vertical { background: #3B3F5C; min-height: 20px; border-radius: 5px; margin: 2px; }
+            QTextEdit#console QScrollBar::handle:vertical:hover { background: #4F5477; }
+            QTextEdit#console QScrollBar::add-line:vertical, QTextEdit#console QScrollBar::sub-line:vertical { height: 0; }
+            QTextEdit#console QScrollBar::add-page:vertical, QTextEdit#console QScrollBar::sub-page:vertical { background: none; }
         """)
 
     # ── Navigation ──────────────────────────────────────────
@@ -1056,6 +1306,11 @@ class EEGApp(QMainWindow):
     def show_training(self) -> None:
         self.stack.setCurrentWidget(self.train_page)
         self._set_nav_active("training")
+
+    def show_system(self) -> None:
+        self.stack.setCurrentWidget(self.system_page)
+        self._set_nav_active("system")
+        self._poll_master_status()
 
     def show_realtime(self) -> None:
         self.stack.setCurrentWidget(self.rt_page)
@@ -1132,6 +1387,180 @@ class EEGApp(QMainWindow):
         sb = self.gyro_log.verticalScrollBar()
         sb.setValue(sb.maximum())
 
+    def append_master_log(self, text: str) -> None:
+        self.master_log.append(text)
+        sb = self.master_log.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def _set_pill_style(self, label: QLabel, state: str, extra: str = "") -> None:
+        s = state.lower().strip()
+        if any(k in s for k in ("running", "ready", "launched")):
+            style = "background-color: #DCFCE7; color: #166534; padding: 8px 18px; border-radius: 20px; font-weight: 700; font-size: 13px;"
+        elif any(k in s for k in ("starting", "elevating", "checking", "pending", "installing")):
+            style = "background-color: #FEF3C7; color: #92400E; padding: 8px 18px; border-radius: 20px; font-weight: 700; font-size: 13px;"
+        elif any(k in s for k in ("error", "failed")):
+            style = "background-color: #FEE2E2; color: #991B1B; padding: 8px 18px; border-radius: 20px; font-weight: 700; font-size: 13px;"
+        else:
+            style = "background-color: #EBE9FF; color: #6C63FF; padding: 8px 18px; border-radius: 20px; font-weight: 700; font-size: 13px;"
+        label.setStyleSheet(style)
+        label.setText(f"{state}{extra}")
+
+    def _find_latest_model(self) -> Optional[Path]:
+        candidates = sorted(
+            ROOT.glob("fbcsp_lda*.joblib"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        return candidates[0] if candidates else None
+
+    def _resolve_master_model_path(self) -> Optional[Path]:
+        model_input = self.master_model_input.text().strip()
+        if model_input:
+            candidate = Path(model_input)
+            if not candidate.is_absolute():
+                candidate = (ROOT / candidate).resolve()
+            if candidate.exists():
+                return candidate
+
+            requested_name = Path(model_input).name.lower()
+            if requested_name == "fbcsp_lda.joblib":
+                latest = self._find_latest_model()
+                if latest:
+                    self.master_model_input.setText(str(latest))
+                    return latest
+
+            QMessageBox.critical(
+                self,
+                "Model Missing",
+                f"Model file not found:\n{candidate}\n\n"
+                "Use an existing .joblib path or train a model first.",
+            )
+            return None
+
+        latest = self._find_latest_model()
+        if latest:
+            self.master_model_input.setText(str(latest))
+            return latest
+
+        QMessageBox.critical(
+            self,
+            "No Model Found",
+            "No model file was found in project root (expected pattern: fbcsp_lda*.joblib).\n"
+            "Run Model Training first, then retry System Launcher.",
+        )
+        return None
+
+    def start_master_launcher(self) -> None:
+        if not MASTER_SCRIPT.exists():
+            QMessageBox.critical(self, "Master Script Missing", f"Could not find:\n{MASTER_SCRIPT}")
+            return
+
+        if self.master_process and self.master_process.state() != QProcess.ProcessState.NotRunning:
+            QMessageBox.information(self, "Already Running", "Master launcher process is already running.")
+            return
+
+        resolved_model = self._resolve_master_model_path()
+        if not resolved_model:
+            return
+        model_arg = str(resolved_model)
+
+        self.master_status_file = MASTER_STATUS_FILE
+        try:
+            if self.master_status_file.exists():
+                self.master_status_file.unlink()
+        except Exception:
+            pass
+
+        self._last_master_snapshot = ""
+        self.master_log.clear()
+        self.append_master_log(f">>> [MASTER] Starting launcher script: {MASTER_SCRIPT}")
+        self.append_master_log(f">>> [MASTER] Status file: {self.master_status_file}")
+        self.append_master_log(f">>> [MASTER] Using model: {model_arg}")
+
+        self._set_pill_style(self.master_status, "starting", " (requesting admin)")
+        for lbl in self._master_component_widgets.values():
+            self._set_pill_style(lbl, "pending")
+
+        args = [
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(MASTER_SCRIPT),
+            "-StatusFile",
+            str(self.master_status_file),
+        ]
+        if model_arg:
+            args.extend(["-ModelPath", model_arg])
+        if self.master_no_follow_cb.isChecked():
+            args.append("-NoOverlayFollow")
+
+        proc = QProcess(self)
+        proc.setWorkingDirectory(str(ROOT))
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        proc.readyReadStandardOutput.connect(self._on_master_output)
+        proc.finished.connect(self._on_master_finished)
+        proc.start("powershell.exe", args)
+        if not proc.waitForStarted(4000):
+            self._set_pill_style(self.master_status, "error", " (failed to launch)")
+            self.append_master_log(">>> [MASTER] Failed to start powershell launcher process")
+            return
+
+        self.master_process = proc
+        self.btn_master_start.setEnabled(False)
+        self.master_status_timer.start()
+        self.sidebar_status.setText("\u25CF Master Launch In Progress")
+        self.sidebar_status.setStyleSheet("color: #F59E0B; font-size: 12px; font-weight: 600;")
+
+    def _on_master_output(self) -> None:
+        if not self.master_process:
+            return
+        data = bytes(self.master_process.readAllStandardOutput()).decode(errors="replace")
+        for ln in data.splitlines():
+            self.append_master_log(f"[MASTER] {ln}")
+
+    def _on_master_finished(self, exit_code: int, _status) -> None:
+        self.append_master_log(f">>> [MASTER] Launcher process exited with code {exit_code}")
+        self.master_process = None
+        # Keep polling status file because elevated process may still be running.
+        self.btn_master_start.setEnabled(True)
+
+    def _poll_master_status(self) -> None:
+        if not self.master_status_file.exists():
+            return
+
+        try:
+            raw = self.master_status_file.read_text(encoding="utf-8-sig").lstrip("\ufeff").strip()
+            if not raw or raw == self._last_master_snapshot:
+                return
+            self._last_master_snapshot = raw
+            payload = json.loads(raw)
+        except Exception as exc:
+            self.append_master_log(f">>> [MASTER] Status parse error: {exc}")
+            return
+
+        phase = str(payload.get("phase", "unknown"))
+        msg = str(payload.get("message", "")).strip()
+        phase_text = phase if not msg else f"{phase} - {msg}"
+        self._set_pill_style(self.master_status, phase, f" - {msg}" if msg else "")
+        self.append_master_log(f">>> [MASTER] {phase_text}")
+
+        components = payload.get("components", {})
+        if isinstance(components, dict):
+            for name, widget in self._master_component_widgets.items():
+                item = components.get(name, {}) if isinstance(components.get(name, {}), dict) else {}
+                c_state = str(item.get("state", "pending"))
+                pid = int(item.get("pid", 0) or 0)
+                extra = f" (pid {pid})" if pid > 0 else ""
+                self._set_pill_style(widget, c_state, extra)
+
+        if phase.lower() == "ready":
+            self.sidebar_status.setText("\u25CF System Ready")
+            self.sidebar_status.setStyleSheet("color: #22C55E; font-size: 12px; font-weight: 600;")
+        elif phase.lower() == "error":
+            self.sidebar_status.setText("\u25CF System Error")
+            self.sidebar_status.setStyleSheet("color: #EF4444; font-size: 12px; font-weight: 600;")
+
     def start_training_pipeline(self) -> None:
         subject = self.subject_input.text().strip()
         if not subject:
@@ -1198,12 +1627,18 @@ class EEGApp(QMainWindow):
             QMessageBox.information(self, "Already Running", "MI classifier is already running.")
             return
 
-        subject = self.rt_subject_input.text().strip()
-        if not subject:
-            QMessageBox.warning(self, "Missing Subject", "Please enter subject name.")
-            return
+        model_override = self.mi_model_input.text().strip()
+        if model_override:
+            model_path = Path(model_override)
+            if not model_path.is_absolute():
+                model_path = (ROOT / model_path).resolve()
+        else:
+            subject = self.rt_subject_input.text().strip()
+            if not subject:
+                QMessageBox.warning(self, "Missing Subject", "Please enter subject name or provide a model path.")
+                return
+            model_path = (ROOT / f"fbcsp_lda_{subject}.joblib").resolve()
 
-        model_path = (ROOT / f"fbcsp_lda_{subject}.joblib").resolve()
         if not model_path.exists():
             QMessageBox.critical(self, "Model Missing", f"Model file not found:\n{model_path}")
             return
@@ -1221,8 +1656,14 @@ class EEGApp(QMainWindow):
             "--step", self.mi_step_input.text().strip() or "0.5",
             "--picks", self.mi_picks_input.text().strip() or "C3,Cz,C4",
             "--vote-k", self.mi_vote_input.text().strip() or "5",
-            "--class-names", self.mi_classes_input.text().strip() or "0:hand_mi,1:rest",
+            "--class-names", self.mi_classes_input.text().strip() or "0:rest,1:hand_mi",
+            "--hand-mi-threshold", self.mi_hand_thr_input.text().strip() or "0.97",
+            "--hand-mi-consecutive", self.mi_hand_consec_input.text().strip() or "3",
         ]
+        if self.mi_scale_uv_cb.isChecked():
+            mi_args.append("--scale-to-uv")
+        if self.mi_block_cb.isChecked():
+            mi_args.append("--block")
         self.rt_process = self._start_module_process("MI", mi_args, self.append_rt_log, self._on_rt_finished)
         if self.rt_process:
             self.mi_status.setText("Status: Running")
@@ -1326,21 +1767,28 @@ class EEGApp(QMainWindow):
         gyro_args = [
             str(SCRIPTS / "gyro_detector.py"),
             "--sfreq", self.gyro_sfreq_input.text().strip() or "500",
-            "--gyro-channels", self.gyro_channels_input.text().strip() or "0,1,2",
+            "--gyro-channels", self.gyro_channels_input.text().strip() or "5,6,7",
             "--stream-type", self.gyro_stream_type_input.text().strip() or "EEG",
-            "--vel-forward", self.gyro_vel_f_input.text().strip() or "80",
-            "--vel-backward", self.gyro_vel_b_input.text().strip() or "80",
+            "--vel-forward", self.gyro_vel_f_input.text().strip() or "30",
+            "--vel-backward", self.gyro_vel_b_input.text().strip() or "30",
             "--vel-left", self.gyro_vel_l_input.text().strip() or "100",
             "--vel-right", self.gyro_vel_r_input.text().strip() or "100",
-            "--vel-return", self.gyro_vel_return_input.text().strip() or "20",
+            "--z-left-threshold", self.gyro_z_left_input.text().strip() or "20",
+            "--z-right-threshold", self.gyro_z_right_input.text().strip() or "20",
+            "--vel-return", self.gyro_vel_return_input.text().strip() or "120",
             "--deadzone-x", self.gyro_deadzone_x_input.text().strip() or "5",
-            "--deadzone-y", self.gyro_deadzone_y_input.text().strip() or "5",
-            "--deadzone-z", self.gyro_deadzone_z_input.text().strip() or "5",
-            "--scale-factor", self.gyro_scale_input.text().strip() or "1.0",
+            "--deadzone-y", self.gyro_deadzone_y_input.text().strip() or "20",
+            "--deadzone-z", self.gyro_deadzone_z_input.text().strip() or "15",
+            "--scale-factor", self.gyro_scale_input.text().strip() or "0.25",
             "--calibration-duration", self.gyro_calib_input.text().strip() or "2.0",
-            "--smoothing-window", self.gyro_smoothing_input.text().strip() or "5",
+            "--smoothing-window", self.gyro_smoothing_input.text().strip() or "14",
+            "--gamepad-repeat-interval", self.gyro_repeat_input.text().strip() or "0.40",
             "--key-mapping", self.gyro_keymap_input.text().strip() or "forward:w,backward:s,left:a,right:d",
         ]
+        if self.gyro_use_z_lr_cb.isChecked():
+            gyro_args.append("--use-z-for-lr")
+        if self.gyro_gamepad_mode_cb.isChecked():
+            gyro_args.append("--gamepad-mode")
         if self.gyro_output_keys_cb.isChecked():
             gyro_args.append("--output-keys")
         if self.gyro_verbose_cb.isChecked():
@@ -1353,6 +1801,9 @@ class EEGApp(QMainWindow):
             gyro_args.append("--invert-y")
         if self.gyro_invert_z_cb.isChecked():
             gyro_args.append("--invert-z")
+        overlay_state_path = self.gyro_overlay_state_input.text().strip()
+        if overlay_state_path:
+            gyro_args.extend(["--overlay-state-file", overlay_state_path])
         extra = self.gyro_extra_input.text().strip()
         if extra:
             gyro_args.extend(shlex.split(extra))
@@ -1418,6 +1869,10 @@ class EEGApp(QMainWindow):
         self.stop_realtime()
         self.stop_blink()
         self.stop_gyro()
+        if self.master_status_timer.isActive():
+            self.master_status_timer.stop()
+        if self.master_process and self.master_process.state() != QProcess.ProcessState.NotRunning:
+            self.master_process.terminate()
         event.accept()
 
 

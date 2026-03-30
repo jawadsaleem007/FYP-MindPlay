@@ -9,3 +9,14 @@ python .\scripts\evaluate_trained_model.py --model fbcsp_lda_S0.joblib --epochs 
 
 
 python .\scripts\record_trials_lsl.py --subject S02 --picks C3,Cz,C4 --trial-len 4.0 --trials-per-class 80 --prep-len 2.0 --inter-trial 2.0 --randomize --scale-to-uv  
+
+
+// Master Script Running (Gyro Script, real_time_classifier, gamepad overlay and blonk detection)
+
+& "e:\FYP_Models\FYP(4)\FYP-MindPlay\start_mindplay_master.bat"
+
+
+
+// Master GUI
+
+& "e:\FYP_Models\FYP(4)\.venv\Scripts\python.exe" "e:\FYP_Models\FYP(4)\FYP-MindPlay\scripts\gui_app.py"
