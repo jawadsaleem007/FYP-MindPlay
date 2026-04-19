@@ -1,0 +1,24 @@
+{
+  "blink": {
+    "sfreq": "500",
+    "picks": "Fp1,Fp2",
+    "window": "0.5",
+    "threshold_uv": "3400000",
+    "refractory": "0.8",
+    "key": "enter",
+    "scale_to_uv": false,
+    "extra_args": ""
+  },
+  "classifier": {
+    "sfreq": "500",
+    "window": "4.0",
+    "step": "0.5",
+    "picks": "C3,Cz,C4",
+    "vote_k": "5",
+    "class_names": "1:rest,0:hand_mi",
+    "hand_mi_threshold": "0.99",
+    "hand_mi_consecutive": "2900",
+    "scale_to_uV": false,
+    "block": false
+  }
+}

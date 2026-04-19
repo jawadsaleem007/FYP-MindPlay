@@ -21,7 +21,7 @@ if str(ROOT) not in sys.path:
 from src.fbcsp import FBCSP
 
 
-def generate_synthetic(n_epochs=100, n_channels=3, n_samples=250, sfreq=250):
+def generate_synthetic(n_epochs=100, n_channels=3, n_samples=250, sfreq=500):
     # simple synthetic: class 0 has stronger power in mu (8-12 Hz) on channel 1
     rng = np.random.RandomState(42)
     X = rng.randn(n_epochs, n_channels, n_samples) * 5.0  # baseline noise (microvolts)
@@ -38,7 +38,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--epochs', type=str, help='Path to numpy .npy file with epochs (n_epochs,n_channels,n_samples)')
     p.add_argument('--labels', type=str, help='Path to numpy .npy file with labels (n_epochs,)')
-    p.add_argument('--sfreq', type=float, default=250.0)
+    p.add_argument('--sfreq', type=float, default=500.0)
     p.add_argument('--out', type=str, default='fbcsp_lda.joblib')
     args = p.parse_args()
 
