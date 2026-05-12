@@ -114,6 +114,7 @@ class VelocityDetector:
                  gamepad_center_on_neutral: bool = False,
                  gamepad_activation_samples: int = 3,
                  gamepad_center_delay: float = 1.0,
+                 auto_reset_multiplier: float = 0.0,
                  # Return threshold - velocity must drop below this to re-enable detection
                  vel_return: float = 20.0,
                  # Deadzone - minimum velocity to consider as movement (filters noise)
@@ -147,6 +148,7 @@ class VelocityDetector:
         self.gamepad_center_on_neutral = gamepad_center_on_neutral
         self.gamepad_activation_samples = max(1, int(gamepad_activation_samples))
         self.gamepad_center_delay = max(0.0, float(gamepad_center_delay))
+        self.auto_reset_multiplier = max(0.0, float(auto_reset_multiplier))
         self.vel_return = vel_return
         self.deadzone_x = deadzone_x
         self.deadzone_y = deadzone_y
@@ -243,8 +245,20 @@ class VelocityDetector:
             return abs(vel_y) < self.vel_return
         return True
 
+    def _gamepad_candidate_ready(self, direction: str) -> bool:
+        if self.gamepad_candidate_direction == direction:
+            self.gamepad_candidate_count += 1
+        else:
+            self.gamepad_candidate_direction = direction
+            self.gamepad_candidate_count = 1
+        return self.gamepad_candidate_count >= self.gamepad_activation_samples
+
+    def _clear_gamepad_candidate(self) -> None:
+        self.gamepad_candidate_direction = None
+        self.gamepad_candidate_count = 0
+
     def _process_gamepad_mode(self, vel_x: float, vel_y: float, vel_z: float) -> Optional[str]:
-        """Single-direction gamepad behavior with opposite-direction cancel to center."""
+        """Single-direction gamepad behavior with debounced opposite-direction cancel."""
         now = time.time()
         scores = self._gamepad_scores(vel_x, vel_y, vel_z)
         best_direction, best_score = max(scores.items(), key=lambda kv: kv[1])
@@ -256,23 +270,27 @@ class VelocityDetector:
             'backward': 'forward',
         }
 
-        # If currently active, only opposite motion can cancel it back to center.
+        # If currently active, keep it latched until neutral or a debounced opposite motion.
         if self.current_direction != 'center':
             opp = opposite.get(self.current_direction)
             if self.gamepad_center_on_neutral and self._gamepad_centered(vel_x, vel_y, vel_z):
                 previous_direction = self.current_direction
                 self.current_direction = 'center'
+                self._clear_gamepad_candidate()
                 if previous_direction in ('forward', 'backward'):
                     self.gamepad_center_block_until = now + self.gamepad_center_delay
                 return 'center'
             if opp and scores.get(opp, 0.0) > 0.0:
-                previous_direction = self.current_direction
-                self.current_direction = 'center'
-                if previous_direction in ('forward', 'backward'):
-                    self.gamepad_center_block_until = now + self.gamepad_center_delay
-                # After opposite cancel, require neutral release before next direction.
-                self.gamepad_wait_neutral_after_center = True
-                return 'center'
+                if self._gamepad_candidate_ready(opp):
+                    previous_direction = self.current_direction
+                    self.current_direction = 'center'
+                    self._clear_gamepad_candidate()
+                    if previous_direction in ('forward', 'backward'):
+                        self.gamepad_center_block_until = now + self.gamepad_center_delay
+                    self.gamepad_wait_neutral_after_center = True
+                    return 'center'
+                return None
+            self._clear_gamepad_candidate()
             return None
 
         # Optional delay gate after forward/backward returns to center.
@@ -282,25 +300,18 @@ class VelocityDetector:
         if self.gamepad_wait_neutral_after_center:
             if max(scores.values()) <= 0.0:
                 self.gamepad_wait_neutral_after_center = False
+            self._clear_gamepad_candidate()
             return None
 
         # From center, choose exactly one dominant direction if any threshold is exceeded.
         if best_score > 0.0:
-            if self.gamepad_candidate_direction == best_direction:
-                self.gamepad_candidate_count += 1
-            else:
-                self.gamepad_candidate_direction = best_direction
-                self.gamepad_candidate_count = 1
-
-            if self.gamepad_candidate_count >= self.gamepad_activation_samples:
+            if self._gamepad_candidate_ready(best_direction):
                 self.current_direction = best_direction
-                self.gamepad_candidate_direction = None
-                self.gamepad_candidate_count = 0
+                self._clear_gamepad_candidate()
                 return best_direction
             return None
 
-        self.gamepad_candidate_direction = None
-        self.gamepad_candidate_count = 0
+        self._clear_gamepad_candidate()
         return None
         
     def start_calibration(self):
@@ -480,23 +491,24 @@ class VelocityDetector:
         if self.invert_z:
             vel_z = -vel_z
         
-        # AUTO-RESET: If velocity exceeds double the threshold, reset that axis baseline
-        # This prevents getting stuck in extreme positions
-        if abs(vel_x) > max(self.vel_left, self.vel_right) * 2.0:
-            # Extreme X velocity - reset X baseline to current position
-            self.baseline[0] = scaled[0]
-            vel_x = 0.0
-            self.direction_active['left'] = False
-            self.direction_active['right'] = False
-            print(f"[AUTO-RESET X-axis: {scaled[0]:.2f}]")
-            
-        if abs(vel_y) > max(self.vel_forward, self.vel_backward) * 2.0:
-            # Extreme Y velocity - reset Y baseline to current position
-            self.baseline[1] = scaled[1]
-            vel_y = 0.0
-            self.direction_active['forward'] = False
-            self.direction_active['backward'] = False
-            print(f"[AUTO-RESET Y-axis: {scaled[1]:.2f}]")
+        # Optional emergency reset for truly extreme velocity spikes. Disabled by
+        # default because normal intentional movement can exceed low thresholds.
+        if self.auto_reset_multiplier > 0.0:
+            x_reset_threshold = max(self.vel_left, self.vel_right) * self.auto_reset_multiplier
+            if x_reset_threshold > 0.0 and abs(vel_x) > x_reset_threshold:
+                self.baseline[0] = scaled[0]
+                vel_x = 0.0
+                self.direction_active['left'] = False
+                self.direction_active['right'] = False
+                print(f"[AUTO-RESET X-axis: {scaled[0]:.2f}]")
+
+            y_reset_threshold = max(self.vel_forward, self.vel_backward) * self.auto_reset_multiplier
+            if y_reset_threshold > 0.0 and abs(vel_y) > y_reset_threshold:
+                self.baseline[1] = scaled[1]
+                vel_y = 0.0
+                self.direction_active['forward'] = False
+                self.direction_active['backward'] = False
+                print(f"[AUTO-RESET Y-axis: {scaled[1]:.2f}]")
         
         # Apply deadzones - ignore velocities below noise threshold
         # ALSO: If within deadzone, immediately unlock ALL directions (instant return to rest)
@@ -793,6 +805,8 @@ def main():
                     help='Consecutive samples required to activate a direction from center in gamepad mode')
     ap.add_argument('--gamepad-center-delay', type=float, default=1.0,
                     help='Seconds to wait in center after forward/backward returns to center before allowing any new direction')
+    ap.add_argument('--auto-reset-multiplier', type=float, default=0.0,
+                    help='Reset an axis baseline if velocity exceeds threshold * multiplier; <=0 disables this behavior')
     ap.add_argument('--vel-return', type=float, default=20.0,
                     help='Return threshold - velocity must drop below this to unlock (deg/s)')
     
@@ -888,6 +902,7 @@ def main():
         gamepad_center_on_neutral=args.gamepad_center_on_neutral,
         gamepad_activation_samples=args.gamepad_activation_samples,
         gamepad_center_delay=args.gamepad_center_delay,
+        auto_reset_multiplier=args.auto_reset_multiplier,
         vel_return=args.vel_return,
         deadzone_x=args.deadzone_x,
         deadzone_y=args.deadzone_y,
