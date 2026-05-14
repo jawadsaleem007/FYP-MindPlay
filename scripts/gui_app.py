@@ -14,6 +14,7 @@ Run:
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import shlex
@@ -22,8 +23,8 @@ import queue
 from pathlib import Path
 from typing import Optional, Tuple, Dict
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QProcess, QTimer
-from PyQt6.QtGui import QFont, QColor, QLinearGradient, QPalette, QBrush
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QProcess, QTimer, QProcessEnvironment
+from PyQt6.QtGui import QFont, QColor, QLinearGradient, QPalette, QBrush, QTextCursor
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -50,6 +51,7 @@ SCRIPTS = ROOT / "scripts"
 DATA_DIR = ROOT / "data"
 MASTER_SCRIPT = ROOT / "start_mindplay_master.ps1"
 MASTER_STATUS_FILE = ROOT / "master_launcher_status.json"
+LAUNCHER_CONFIG_FILE = ROOT / "mindplay_launcher_config.json"
 
 
 class TrainingWorker(QThread):
@@ -72,20 +74,37 @@ class TrainingWorker(QThread):
 
     @staticmethod
     def _run_cmd_stream(cmd: list[str], cwd: Path, emit_fn) -> Tuple[int, str]:
+        run_cmd = list(cmd)
+        if run_cmd:
+            exe_name = Path(run_cmd[0]).name.lower()
+            if (exe_name.startswith("python") or exe_name == "py.exe") and "-u" not in run_cmd[1:]:
+                run_cmd.insert(1, "-u")
+
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+
         proc = subprocess.Popen(
-            cmd,
+            run_cmd,
             cwd=str(cwd),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
+            env=env,
         )
-        lines = []
+        lines: list[str] = []
         assert proc.stdout is not None
         for raw in proc.stdout:
-            line = raw.rstrip("\r\n")
-            lines.append(line)
-            emit_fn(line)
+            # Preserve carriage-return progress updates as visible lines in GUI logs.
+            normalized = raw.replace("\r\n", "\n").replace("\r", "\n")
+            parts = normalized.split("\n")
+            if parts and parts[-1] == "":
+                parts = parts[:-1]
+            for line in parts:
+                lines.append(line)
+                emit_fn(line)
         proc.wait()
         return int(proc.returncode), "\n".join(lines)
 
@@ -131,7 +150,7 @@ class TrainingWorker(QThread):
                     "--trial-len",
                     "4.0",
                     "--trials-per-class",
-                    "25",
+                    "20",
                     "--prep-len",
                     "2.0",
                     "--inter-trial",
@@ -236,6 +255,7 @@ class EEGApp(QMainWindow):
         self.master_status_file: Path = MASTER_STATUS_FILE
         self._last_master_snapshot: str = ""
         self._nav_buttons: dict[str, QPushButton] = {}
+        self._module_partial_output: dict[int, str] = {}
 
         self._build_ui()
         self._apply_theme()
@@ -841,10 +861,10 @@ class EEGApp(QMainWindow):
         self.mi_classes_input = QLineEdit("0:rest,1:hand_mi")
         cfg_lay.addWidget(self.mi_classes_input, 3, 3)
         cfg_lay.addWidget(QLabel("Hand MI threshold"), 4, 0)
-        self.mi_hand_thr_input = self._make_num_input("0.97")
+        self.mi_hand_thr_input = self._make_num_input("0.9")
         cfg_lay.addWidget(self.mi_hand_thr_input, 4, 1)
         cfg_lay.addWidget(QLabel("Consecutive windows"), 4, 2)
-        self.mi_hand_consec_input = self._make_num_input("3")
+        self.mi_hand_consec_input = self._make_num_input("2")
         cfg_lay.addWidget(self.mi_hand_consec_input, 4, 3)
         self.mi_scale_uv_cb = QCheckBox("Scale incoming values to uV")
         cfg_lay.addWidget(self.mi_scale_uv_cb, 5, 0, 1, 2)
@@ -937,13 +957,13 @@ class EEGApp(QMainWindow):
         self.blink_window_input = QLineEdit("0.5")
         cfg_lay.addWidget(self.blink_window_input, 1, 1)
         cfg_lay.addWidget(QLabel("Threshold (uV)"), 1, 2)
-        self.blink_thr_input = QLineEdit("80")
+        self.blink_thr_input = QLineEdit("140")
         cfg_lay.addWidget(self.blink_thr_input, 1, 3)
         cfg_lay.addWidget(QLabel("Refractory (s)"), 2, 0)
         self.blink_refractory_input = QLineEdit("0.8")
         cfg_lay.addWidget(self.blink_refractory_input, 2, 1)
         cfg_lay.addWidget(QLabel("Key (optional)"), 2, 2)
-        self.blink_key_input = QLineEdit("b")
+        self.blink_key_input = QLineEdit("enter")
         cfg_lay.addWidget(self.blink_key_input, 2, 3)
         self.blink_scale_uv_cb = QCheckBox("Scale incoming values to uV")
         self.blink_scale_uv_cb.setChecked(True)
@@ -1053,7 +1073,7 @@ class EEGApp(QMainWindow):
         self.gyro_deadzone_x_input = self._make_num_input("5")
         cfg_lay.addWidget(self.gyro_deadzone_x_input, 5, 1)
         cfg_lay.addWidget(QLabel("Deadzone Y"), 5, 2)
-        self.gyro_deadzone_y_input = self._make_num_input("20")
+        self.gyro_deadzone_y_input = self._make_num_input("15")
         cfg_lay.addWidget(self.gyro_deadzone_y_input, 5, 3)
         cfg_lay.addWidget(QLabel("Deadzone Z"), 6, 0)
         self.gyro_deadzone_z_input = self._make_num_input("15")
@@ -1367,30 +1387,27 @@ class EEGApp(QMainWindow):
 
     # ── Console Helpers ─────────────────────────────────────
 
-    def append_train_log(self, text: str) -> None:
-        self.train_log.append(text)
-        sb = self.train_log.verticalScrollBar()
+    @staticmethod
+    def _append_console_line(widget: QTextEdit, text: str) -> None:
+        widget.moveCursor(QTextCursor.MoveOperation.End)
+        widget.insertPlainText(f"{text}\n")
+        sb = widget.verticalScrollBar()
         sb.setValue(sb.maximum())
+
+    def append_train_log(self, text: str) -> None:
+        self._append_console_line(self.train_log, text)
 
     def append_rt_log(self, text: str) -> None:
-        self.rt_log.append(text)
-        sb = self.rt_log.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        self._append_console_line(self.rt_log, text)
 
     def append_blink_log(self, text: str) -> None:
-        self.blink_log.append(text)
-        sb = self.blink_log.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        self._append_console_line(self.blink_log, text)
 
     def append_gyro_log(self, text: str) -> None:
-        self.gyro_log.append(text)
-        sb = self.gyro_log.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        self._append_console_line(self.gyro_log, text)
 
     def append_master_log(self, text: str) -> None:
-        self.master_log.append(text)
-        sb = self.master_log.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        self._append_console_line(self.master_log, text)
 
     def _set_pill_style(self, label: QLabel, state: str, extra: str = "") -> None:
         s = state.lower().strip()
@@ -1416,11 +1433,23 @@ class EEGApp(QMainWindow):
     def _resolve_master_model_path(self) -> Optional[Path]:
         model_input = self.master_model_input.text().strip()
         if model_input:
-            candidate = Path(model_input)
-            if not candidate.is_absolute():
-                candidate = (ROOT / candidate).resolve()
-            if candidate.exists():
-                return candidate
+            requested = Path(model_input)
+            candidates: list[Path] = []
+            if requested.is_absolute():
+                candidates.append(requested)
+            else:
+                candidates.append((ROOT / requested).resolve())
+                if requested.parts and requested.parts[0].lower() == ROOT.name.lower() and len(requested.parts) > 1:
+                    trimmed = Path(*requested.parts[1:])
+                    candidates.append((ROOT / trimmed).resolve())
+                candidates.append((ROOT / requested.name).resolve())
+
+            for candidate in candidates:
+                if candidate.exists():
+                    self.master_model_input.setText(str(candidate))
+                    return candidate
+
+            candidate = candidates[0]
 
             requested_name = Path(model_input).name.lower()
             if requested_name == "fbcsp_lda.joblib":
@@ -1450,6 +1479,40 @@ class EEGApp(QMainWindow):
         )
         return None
 
+    def _save_launcher_config(self) -> bool:
+        """Save current dashboard parameters to launcher config file."""
+        try:
+            config = {
+                "blink": {
+                    "sfreq": self.blink_sfreq_input.text().strip() or "500",
+                    "picks": self.blink_picks_input.text().strip() or "Fp1,Fp2",
+                    "window": self.blink_window_input.text().strip() or "0.5",
+                    "threshold_uv": self.blink_thr_input.text().strip() or "140",
+                    "refractory": self.blink_refractory_input.text().strip() or "0.8",
+                    "key": self.blink_key_input.text().strip() or "enter",
+                    "scale_to_uv": self.blink_scale_uv_cb.isChecked(),
+                    "extra_args": self.blink_extra_input.text().strip() or "",
+                },
+                "classifier": {
+                    "sfreq": self.mi_sfreq_input.text().strip() or "500",
+                    "window": self.mi_window_input.text().strip() or "4.0",
+                    "step": self.mi_step_input.text().strip() or "0.5",
+                    "picks": self.mi_picks_input.text().strip() or "C3,Cz,C4",
+                    "vote_k": self.mi_vote_input.text().strip() or "5",
+                    "class_names": self.mi_classes_input.text().strip() or "0:rest,1:hand_mi",
+                    "hand_mi_threshold": self.mi_hand_thr_input.text().strip() or "0.9",
+                    "hand_mi_consecutive": self.mi_hand_consec_input.text().strip() or "2",
+                    "scale_to_uV": self.mi_scale_uv_cb.isChecked(),
+                    "block": self.mi_block_cb.isChecked(),
+                }
+            }
+            with open(LAUNCHER_CONFIG_FILE, 'w') as f:
+                json.dump(config, f, indent=2)
+            return True
+        except Exception as e:
+            self.append_master_log(f">>> [ERROR] Failed to save launcher config: {e}")
+            return False
+
     def start_master_launcher(self) -> None:
         if not MASTER_SCRIPT.exists():
             QMessageBox.critical(self, "Master Script Missing", f"Could not find:\n{MASTER_SCRIPT}")
@@ -1457,6 +1520,11 @@ class EEGApp(QMainWindow):
 
         if self.master_process and self.master_process.state() != QProcess.ProcessState.NotRunning:
             QMessageBox.information(self, "Already Running", "Master launcher process is already running.")
+            return
+
+        # Save dashboard parameters to config file
+        if not self._save_launcher_config():
+            QMessageBox.warning(self, "Config Save Failed", "Failed to save launcher configuration.")
             return
 
         resolved_model = self._resolve_master_model_path()
@@ -1475,6 +1543,7 @@ class EEGApp(QMainWindow):
         self.master_log.clear()
         self.append_master_log(f">>> [MASTER] Starting launcher script: {MASTER_SCRIPT}")
         self.append_master_log(f">>> [MASTER] Status file: {self.master_status_file}")
+        self.append_master_log(f">>> [MASTER] Config file: {LAUNCHER_CONFIG_FILE}")
         self.append_master_log(f">>> [MASTER] Using model: {model_arg}")
 
         self._set_pill_style(self.master_status, "starting", " (requesting admin)")
@@ -1489,6 +1558,8 @@ class EEGApp(QMainWindow):
             str(MASTER_SCRIPT),
             "-StatusFile",
             str(self.master_status_file),
+            "-ConfigFile",
+            str(LAUNCHER_CONFIG_FILE),
         ]
         if model_arg:
             args.extend(["-ModelPath", model_arg])
@@ -1679,18 +1750,48 @@ class EEGApp(QMainWindow):
         proc = QProcess(self)
         proc.setWorkingDirectory(str(ROOT))
         proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+
+        env = QProcessEnvironment.systemEnvironment()
+        env.insert("PYTHONUNBUFFERED", "1")
+        proc.setProcessEnvironment(env)
+
+        run_args = list(args)
+        if "-u" not in run_args:
+            run_args.insert(0, "-u")
+
+        self._module_partial_output[id(proc)] = ""
         proc.readyReadStandardOutput.connect(lambda n=module_name, p=proc, fn=append_fn: self._on_module_output(n, p, fn))
-        proc.finished.connect(lambda exit_code, _status, fn=finished_fn: fn(exit_code))
-        proc.start(sys.executable, args)
+        proc.finished.connect(
+            lambda exit_code, _status, n=module_name, p=proc, afn=append_fn, fn=finished_fn:
+            self._on_module_finished(n, p, afn, fn, exit_code)
+        )
+        proc.start(sys.executable, run_args)
         if not proc.waitForStarted(3000):
+            self._module_partial_output.pop(id(proc), None)
             append_fn(f">>> [{module_name}] Failed to start process")
             return None
         return proc
 
     def _on_module_output(self, module_name: str, proc: QProcess, append_fn) -> None:
         data = bytes(proc.readAllStandardOutput()).decode(errors="replace")
-        for ln in data.splitlines():
+        if not data:
+            return
+
+        key = id(proc)
+        pending = self._module_partial_output.get(key, "")
+        normalized = (pending + data).replace("\r\n", "\n").replace("\r", "\n")
+        parts = normalized.split("\n")
+        self._module_partial_output[key] = parts.pop() if parts else ""
+
+        for ln in parts:
             append_fn(f"[{module_name}] {ln}")
+
+    def _on_module_finished(self, module_name: str, proc: QProcess, append_fn, finished_fn, exit_code: int) -> None:
+        self._on_module_output(module_name, proc, append_fn)
+        tail = self._module_partial_output.pop(id(proc), "")
+        if tail:
+            append_fn(f"[{module_name}] {tail}")
+        finished_fn(exit_code)
 
     def _on_rt_finished(self, exit_code: int) -> None:
         self.rt_process = None

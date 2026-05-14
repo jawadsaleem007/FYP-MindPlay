@@ -107,7 +107,7 @@ def main():
     ap.add_argument('--out-dir', type=str, default='data', help='Output directory')
     ap.add_argument('--picks', type=str, default='Cz,C3,C4', help='Channel names or indices CSV (e.g., "Cz,C3,C4" or "0,1,2")')
     ap.add_argument('--trial-len', type=float, default=3.0, help='Trial epoch length (seconds). Default 3.0s for MI and Rest')
-    ap.add_argument('--trials-per-class', type=int, default=40, help='Trials for each class (MI and Rest)')
+    ap.add_argument('--trials-per-class', type=int, default=10, help='Trials for each class (MI and Rest)')
     ap.add_argument('--prep-len', type=float, default=2.0, help='Preparation time before each trial (seconds)')
     ap.add_argument('--inter-trial', type=float, default=2.0, help='Rest period between trials (seconds)')
     ap.add_argument('--randomize', action='store_true', help='Randomize order of MI/Rest trials')

@@ -115,7 +115,7 @@ def resolve_picks(labels: List[str], picks_arg: str, default_names=("Fp1", "Fp2"
     return [0]
 
 
-def press_key_once(k='b'):
+def press_key_once(k='enter'):
     if not _key_output_available:
         return False
     try:
@@ -136,7 +136,7 @@ def main():
     ap.add_argument('--threshold-uv', type=float, default=80.0, help='Peak-to-peak threshold (microvolts) to declare blink')
     ap.add_argument('--refractory', type=float, default=0.8, help='Minimum seconds between blink detections')
     ap.add_argument('--scale-to-uv', action='store_true', help='Multiply incoming volts by 1e6 to convert to microvolts')
-    ap.add_argument('--key', type=str, default=None, help='Optional key to press on blink (e.g., b)')
+    ap.add_argument('--key', type=str, default='enter', help='Key to press on blink (default: enter)')
     args = ap.parse_args()
 
     info = find_eeg_stream()

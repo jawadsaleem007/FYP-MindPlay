@@ -1,7 +1,7 @@
  real_time_classifier:
 python .\scripts\real_time_classifier.py --model fbcsp_lda_S02.joblib --sfreq 500 --window 4.0 --step 0.5 --picks C3,Cz,C4 --vote-k 5 --class-names "0:hand_mi,1:rest"
 
-
+python .\scripts\train_fbcsp_lda.py --epochs data\S02_epochs_20251130_172259.npy --labels data\S02_labels_20251130_172259.npy --sfreq 500 --out fbcsp_lda_S02.joblib
 
 
 evaluate model:
