@@ -303,7 +303,7 @@ try {
 
   $blinkArgs = @(
   "--sfreq", "500",
-  "--picks", "Fp1,Fp2",
+  "--picks", "0,1",
   "--window", "0.5",
   "--threshold-uv", "80",
   "--refractory", "0.8",

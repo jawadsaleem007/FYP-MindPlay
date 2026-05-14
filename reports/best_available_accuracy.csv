@@ -1,0 +1,19 @@
+model,dataset,accuracy,balanced_accuracy,n_trials,notes
+fbcsp_lda_from_npz.joblib,raw_012_3s,0.843750,0.843750,160,best score among all available compatible datasets; may be cross-subject/proxy
+fbcsp_lda_from_npz_012_3s.joblib,raw_012_3s,0.837500,0.837500,160,best score among all available compatible datasets; may be cross-subject/proxy
+fbcsp_lda_from_npz_012_4s.joblib,raw_012_3s,0.843750,0.843750,160,best score among all available compatible datasets; may be cross-subject/proxy
+fbcsp_lda_from_npz_034_3s.joblib,raw_034_3s,0.943750,0.943750,160,best score among all available compatible datasets; may be cross-subject/proxy
+fbcsp_lda_S02.joblib,S02,0.700000,0.700000,160,best score among all available compatible datasets; may be cross-subject/proxy
+fbcsp_lda_S03.joblib,raw_034_3s,0.662500,0.662500,160,best score among all available compatible datasets; may be cross-subject/proxy
+fbcsp_lda_S04.joblib,S15,0.600000,0.600000,40,best score among all available compatible datasets; may be cross-subject/proxy
+fbcsp_lda_S05.joblib,S20,0.575000,0.575000,40,best score among all available compatible datasets; may be cross-subject/proxy
+fbcsp_lda_S06 (1).joblib,raw_012_4s,0.637500,0.637500,160,best score among all available compatible datasets; may be cross-subject/proxy
+fbcsp_lda_S06.joblib,raw_012_4s,0.637500,0.637500,160,best score among all available compatible datasets; may be cross-subject/proxy
+fbcsp_lda_S07.joblib,S15,0.675000,0.675000,40,best score among all available compatible datasets; may be cross-subject/proxy
+fbcsp_lda_S08.joblib,S21,0.625000,0.625000,40,best score among all available compatible datasets; may be cross-subject/proxy
+fbcsp_lda_S10.joblib,S20,0.550000,0.550000,40,best score among all available compatible datasets; may be cross-subject/proxy
+fbcsp_lda_S12.joblib,S12_U,1.000000,1.000000,20,best score among all available compatible datasets; may be cross-subject/proxy
+fbcsp_lda_S14_U.joblib,S14_U,1.000000,1.000000,20,best score among all available compatible datasets; may be cross-subject/proxy
+fbcsp_lda_S15.joblib,S15,1.000000,1.000000,40,best score among all available compatible datasets; may be cross-subject/proxy
+fbcsp_lda_S20.joblib,S20,0.950000,0.950000,40,best score among all available compatible datasets; may be cross-subject/proxy
+fbcsp_lda_S21.joblib,S21,0.975000,0.975000,40,best score among all available compatible datasets; may be cross-subject/proxy

@@ -938,7 +938,7 @@ class EEGApp(QMainWindow):
         self.blink_sfreq_input = QLineEdit("500")
         cfg_lay.addWidget(self.blink_sfreq_input, 0, 1)
         cfg_lay.addWidget(QLabel("Picks"), 0, 2)
-        self.blink_picks_input = QLineEdit("Fp1,Fp2")
+        self.blink_picks_input = QLineEdit("0,1")
         cfg_lay.addWidget(self.blink_picks_input, 0, 3)
         cfg_lay.addWidget(QLabel("Window (s)"), 1, 0)
         self.blink_window_input = QLineEdit("0.5")
@@ -1738,7 +1738,7 @@ class EEGApp(QMainWindow):
         blink_args = [
             str(SCRIPTS / "blink_detector.py"),
             "--sfreq", self.blink_sfreq_input.text().strip() or "500",
-            "--picks", self.blink_picks_input.text().strip() or "Fp1,Fp2",
+            "--picks", self.blink_picks_input.text().strip() or "0,1",
             "--window", self.blink_window_input.text().strip() or "0.5",
             "--threshold-uv", self.blink_thr_input.text().strip() or "80",
             "--refractory", self.blink_refractory_input.text().strip() or "0.8",

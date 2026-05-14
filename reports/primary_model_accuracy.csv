@@ -1,0 +1,19 @@
+model,dataset,evaluation_type,accuracy,balanced_accuracy,n_trials,notes,confusion_matrix_png
+fbcsp_lda_from_npz.joblib,raw_012_4s,primary,0.825000,0.825000,160,"primary inferred from default train_from_npz picks 0,1,2 full 4s",reports/confusion_matrices/fbcsp_lda_from_npz__raw_012_4s__primary.png
+fbcsp_lda_from_npz_012_3s.joblib,raw_012_3s,primary,0.837500,0.837500,160,"primary inferred from filename: raw NPZ channels 0,1,2 cropped to 3s",reports/confusion_matrices/fbcsp_lda_from_npz_012_3s__raw_012_3s__primary.png
+fbcsp_lda_from_npz_012_4s.joblib,raw_012_4s,primary,0.825000,0.825000,160,"primary inferred from filename: raw NPZ channels 0,1,2 full 4s",reports/confusion_matrices/fbcsp_lda_from_npz_012_4s__raw_012_4s__primary.png
+fbcsp_lda_from_npz_034_3s.joblib,raw_034_3s,primary,0.943750,0.943750,160,"primary inferred from filename: raw NPZ channels 0,3,4 cropped to 3s",reports/confusion_matrices/fbcsp_lda_from_npz_034_3s__raw_034_3s__primary.png
+fbcsp_lda_S02.joblib,S02,primary,0.700000,0.700000,160,matching subject dataset,reports/confusion_matrices/fbcsp_lda_S02__S02__primary.png
+fbcsp_lda_S03.joblib,raw_034_3s,proxy_best_available,0.662500,0.662500,160,No matching primary dataset found; using best available compatible dataset (raw_034_3s) as proxy.,reports/confusion_matrices/fbcsp_lda_S03__raw_034_3s__proxy_best_available.png
+fbcsp_lda_S04.joblib,S15,proxy_best_available,0.600000,0.600000,40,No matching primary dataset found; using best available compatible dataset (S15) as proxy.,reports/confusion_matrices/fbcsp_lda_S04__S15__proxy_best_available.png
+fbcsp_lda_S05.joblib,S20,proxy_best_available,0.575000,0.575000,40,No matching primary dataset found; using best available compatible dataset (S20) as proxy.,reports/confusion_matrices/fbcsp_lda_S05__S20__proxy_best_available.png
+fbcsp_lda_S06 (1).joblib,raw_012_4s,proxy_best_available,0.637500,0.637500,160,No matching primary dataset found; using best available compatible dataset (raw_012_4s) as proxy.,reports/confusion_matrices/fbcsp_lda_S06_1__raw_012_4s__proxy_best_available.png
+fbcsp_lda_S06.joblib,raw_012_4s,proxy_best_available,0.637500,0.637500,160,No matching primary dataset found; using best available compatible dataset (raw_012_4s) as proxy.,reports/confusion_matrices/fbcsp_lda_S06__raw_012_4s__proxy_best_available.png
+fbcsp_lda_S07.joblib,S15,proxy_best_available,0.675000,0.675000,40,No matching primary dataset found; using best available compatible dataset (S15) as proxy.,reports/confusion_matrices/fbcsp_lda_S07__S15__proxy_best_available.png
+fbcsp_lda_S08.joblib,S21,proxy_best_available,0.625000,0.625000,40,No matching primary dataset found; using best available compatible dataset (S21) as proxy.,reports/confusion_matrices/fbcsp_lda_S08__S21__proxy_best_available.png
+fbcsp_lda_S10.joblib,S20,proxy_best_available,0.550000,0.550000,40,No matching primary dataset found; using best available compatible dataset (S20) as proxy.,reports/confusion_matrices/fbcsp_lda_S10__S20__proxy_best_available.png
+fbcsp_lda_S12.joblib,S12_U,primary,1.000000,1.000000,20,closest available subject dataset (S12_U),reports/confusion_matrices/fbcsp_lda_S12__S12_U__primary.png
+fbcsp_lda_S14_U.joblib,S14_U,primary,1.000000,1.000000,20,matching subject dataset,reports/confusion_matrices/fbcsp_lda_S14_U__S14_U__primary.png
+fbcsp_lda_S15.joblib,S15,primary,1.000000,1.000000,40,matching subject dataset,reports/confusion_matrices/fbcsp_lda_S15__S15__primary.png
+fbcsp_lda_S20.joblib,S20,primary,0.950000,0.950000,40,matching subject dataset,reports/confusion_matrices/fbcsp_lda_S20__S20__primary.png
+fbcsp_lda_S21.joblib,S21,primary,0.975000,0.975000,40,matching subject dataset,reports/confusion_matrices/fbcsp_lda_S21__S21__primary.png

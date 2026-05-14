@@ -5,6 +5,10 @@ import pytest
 from scripts import blink_detector
 
 
+def test_default_blink_picks_use_channels_zero_and_one():
+    assert blink_detector.resolve_picks(["", "", ""], "") == [0, 1]
+
+
 class FakeInfo:
     def nominal_srate(self):
         return 2.0

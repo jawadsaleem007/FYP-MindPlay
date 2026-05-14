@@ -1,0 +1,167 @@
+[
+  {
+    "name": "S02",
+    "path": "data\\S02_epochs_20251130_172259.npy",
+    "kind": "npy",
+    "shape": [
+      160,
+      3,
+      2000
+    ],
+    "labels": {
+      "0": 80,
+      "1": 80
+    },
+    "notes": "subject epoch/label files"
+  },
+  {
+    "name": "S11",
+    "path": "data\\S11_epochs_20260331_182349.npy",
+    "kind": "npy",
+    "shape": [
+      50,
+      3,
+      2000
+    ],
+    "labels": {
+      "0": 25,
+      "1": 25
+    },
+    "notes": "subject epoch/label files"
+  },
+  {
+    "name": "S12_U",
+    "path": "data\\S12_U_epochs_20260331_182105.npy",
+    "kind": "npy",
+    "shape": [
+      20,
+      3,
+      2000
+    ],
+    "labels": {
+      "0": 10,
+      "1": 10
+    },
+    "notes": "subject epoch/label files"
+  },
+  {
+    "name": "S14_U",
+    "path": "data\\S14_U_epochs_20260331_184040.npy",
+    "kind": "npy",
+    "shape": [
+      20,
+      3,
+      2000
+    ],
+    "labels": {
+      "0": 10,
+      "1": 10
+    },
+    "notes": "subject epoch/label files"
+  },
+  {
+    "name": "S15",
+    "path": "data\\S15_epochs_20260331_185415.npy",
+    "kind": "npy",
+    "shape": [
+      40,
+      3,
+      2000
+    ],
+    "labels": {
+      "0": 20,
+      "1": 20
+    },
+    "notes": "subject epoch/label files"
+  },
+  {
+    "name": "S20",
+    "path": "data\\S20_epochs_20260416_110414.npy",
+    "kind": "npy",
+    "shape": [
+      40,
+      3,
+      2000
+    ],
+    "labels": {
+      "0": 20,
+      "1": 20
+    },
+    "notes": "subject epoch/label files"
+  },
+  {
+    "name": "S21",
+    "path": "data\\S21_epochs_20260417_101230.npy",
+    "kind": "npy",
+    "shape": [
+      40,
+      3,
+      2000
+    ],
+    "labels": {
+      "0": 20,
+      "1": 20
+    },
+    "notes": "subject epoch/label files"
+  },
+  {
+    "name": "raw_012_4s",
+    "path": "data\\raw_data_20251128_105528.npz",
+    "kind": "npz",
+    "shape": [
+      160,
+      3,
+      2000
+    ],
+    "labels": {
+      "0": 80,
+      "1": 80
+    },
+    "notes": "raw NPZ channels 0,1,2, 4s"
+  },
+  {
+    "name": "raw_012_3s",
+    "path": "data\\raw_data_20251128_105528.npz",
+    "kind": "npz",
+    "shape": [
+      160,
+      3,
+      1500
+    ],
+    "labels": {
+      "0": 80,
+      "1": 80
+    },
+    "notes": "raw NPZ channels 0,1,2, first 3s"
+  },
+  {
+    "name": "raw_034_3s",
+    "path": "data\\raw_data_20251128_105528.npz",
+    "kind": "npz",
+    "shape": [
+      160,
+      3,
+      1500
+    ],
+    "labels": {
+      "0": 80,
+      "1": 80
+    },
+    "notes": "raw NPZ channels 0,3,4, first 3s"
+  },
+  {
+    "name": "S02_combined_npz",
+    "path": "data\\S02_combined.npz",
+    "kind": "npz",
+    "shape": [
+      160,
+      3,
+      2000
+    ],
+    "labels": {
+      "0": 80,
+      "1": 80
+    },
+    "notes": "S02 combined NPZ full 4s"
+  }
+]

@@ -1,0 +1,362 @@
+[
+  {
+    "model": "fbcsp_lda_from_npz.joblib",
+    "dataset": "raw_012_4s",
+    "evaluation_type": "primary",
+    "labels": [
+      0,
+      1
+    ],
+    "matrix": [
+      [
+        73,
+        7
+      ],
+      [
+        21,
+        59
+      ]
+    ],
+    "accuracy": 0.825
+  },
+  {
+    "model": "fbcsp_lda_from_npz_012_3s.joblib",
+    "dataset": "raw_012_3s",
+    "evaluation_type": "primary",
+    "labels": [
+      0,
+      1
+    ],
+    "matrix": [
+      [
+        75,
+        5
+      ],
+      [
+        21,
+        59
+      ]
+    ],
+    "accuracy": 0.8375
+  },
+  {
+    "model": "fbcsp_lda_from_npz_012_4s.joblib",
+    "dataset": "raw_012_4s",
+    "evaluation_type": "primary",
+    "labels": [
+      0,
+      1
+    ],
+    "matrix": [
+      [
+        73,
+        7
+      ],
+      [
+        21,
+        59
+      ]
+    ],
+    "accuracy": 0.825
+  },
+  {
+    "model": "fbcsp_lda_from_npz_034_3s.joblib",
+    "dataset": "raw_034_3s",
+    "evaluation_type": "primary",
+    "labels": [
+      0,
+      1
+    ],
+    "matrix": [
+      [
+        77,
+        3
+      ],
+      [
+        6,
+        74
+      ]
+    ],
+    "accuracy": 0.94375
+  },
+  {
+    "model": "fbcsp_lda_S02.joblib",
+    "dataset": "S02",
+    "evaluation_type": "primary",
+    "labels": [
+      0,
+      1
+    ],
+    "matrix": [
+      [
+        58,
+        22
+      ],
+      [
+        26,
+        54
+      ]
+    ],
+    "accuracy": 0.7
+  },
+  {
+    "model": "fbcsp_lda_S03.joblib",
+    "dataset": "raw_034_3s",
+    "evaluation_type": "proxy_best_available",
+    "labels": [
+      0,
+      1
+    ],
+    "matrix": [
+      [
+        70,
+        10
+      ],
+      [
+        44,
+        36
+      ]
+    ],
+    "accuracy": 0.6625
+  },
+  {
+    "model": "fbcsp_lda_S04.joblib",
+    "dataset": "S15",
+    "evaluation_type": "proxy_best_available",
+    "labels": [
+      0,
+      1
+    ],
+    "matrix": [
+      [
+        11,
+        9
+      ],
+      [
+        7,
+        13
+      ]
+    ],
+    "accuracy": 0.6
+  },
+  {
+    "model": "fbcsp_lda_S05.joblib",
+    "dataset": "S20",
+    "evaluation_type": "proxy_best_available",
+    "labels": [
+      0,
+      1
+    ],
+    "matrix": [
+      [
+        20,
+        0
+      ],
+      [
+        17,
+        3
+      ]
+    ],
+    "accuracy": 0.575
+  },
+  {
+    "model": "fbcsp_lda_S06 (1).joblib",
+    "dataset": "raw_012_4s",
+    "evaluation_type": "proxy_best_available",
+    "labels": [
+      0,
+      1
+    ],
+    "matrix": [
+      [
+        30,
+        50
+      ],
+      [
+        8,
+        72
+      ]
+    ],
+    "accuracy": 0.6375
+  },
+  {
+    "model": "fbcsp_lda_S06.joblib",
+    "dataset": "raw_012_4s",
+    "evaluation_type": "proxy_best_available",
+    "labels": [
+      0,
+      1
+    ],
+    "matrix": [
+      [
+        30,
+        50
+      ],
+      [
+        8,
+        72
+      ]
+    ],
+    "accuracy": 0.6375
+  },
+  {
+    "model": "fbcsp_lda_S07.joblib",
+    "dataset": "S15",
+    "evaluation_type": "proxy_best_available",
+    "labels": [
+      0,
+      1
+    ],
+    "matrix": [
+      [
+        16,
+        4
+      ],
+      [
+        9,
+        11
+      ]
+    ],
+    "accuracy": 0.675
+  },
+  {
+    "model": "fbcsp_lda_S08.joblib",
+    "dataset": "S21",
+    "evaluation_type": "proxy_best_available",
+    "labels": [
+      0,
+      1
+    ],
+    "matrix": [
+      [
+        18,
+        2
+      ],
+      [
+        13,
+        7
+      ]
+    ],
+    "accuracy": 0.625
+  },
+  {
+    "model": "fbcsp_lda_S10.joblib",
+    "dataset": "S20",
+    "evaluation_type": "proxy_best_available",
+    "labels": [
+      0,
+      1
+    ],
+    "matrix": [
+      [
+        4,
+        16
+      ],
+      [
+        2,
+        18
+      ]
+    ],
+    "accuracy": 0.55
+  },
+  {
+    "model": "fbcsp_lda_S12.joblib",
+    "dataset": "S12_U",
+    "evaluation_type": "primary",
+    "labels": [
+      0,
+      1
+    ],
+    "matrix": [
+      [
+        10,
+        0
+      ],
+      [
+        0,
+        10
+      ]
+    ],
+    "accuracy": 1.0
+  },
+  {
+    "model": "fbcsp_lda_S14_U.joblib",
+    "dataset": "S14_U",
+    "evaluation_type": "primary",
+    "labels": [
+      0,
+      1
+    ],
+    "matrix": [
+      [
+        10,
+        0
+      ],
+      [
+        0,
+        10
+      ]
+    ],
+    "accuracy": 1.0
+  },
+  {
+    "model": "fbcsp_lda_S15.joblib",
+    "dataset": "S15",
+    "evaluation_type": "primary",
+    "labels": [
+      0,
+      1
+    ],
+    "matrix": [
+      [
+        20,
+        0
+      ],
+      [
+        0,
+        20
+      ]
+    ],
+    "accuracy": 1.0
+  },
+  {
+    "model": "fbcsp_lda_S20.joblib",
+    "dataset": "S20",
+    "evaluation_type": "primary",
+    "labels": [
+      0,
+      1
+    ],
+    "matrix": [
+      [
+        19,
+        1
+      ],
+      [
+        1,
+        19
+      ]
+    ],
+    "accuracy": 0.95
+  },
+  {
+    "model": "fbcsp_lda_S21.joblib",
+    "dataset": "S21",
+    "evaluation_type": "primary",
+    "labels": [
+      0,
+      1
+    ],
+    "matrix": [
+      [
+        20,
+        0
+      ],
+      [
+        1,
+        19
+      ]
+    ],
+    "accuracy": 0.975
+  }
+]

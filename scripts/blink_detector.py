@@ -1,7 +1,7 @@
 """Real-time intentional blink detection from an LSL EEG stream.
 
-This script listens to an LSL stream (type='EEG'), focuses on frontal channels
-if available (e.g., Fp1/Fp2/Fz), and detects blink events based on the
+This script listens to an LSL stream (type='EEG'), focuses on blink channels
+0,1 by default, and detects blink events based on the
 band-limited peak-to-peak amplitude within short windows.
 
 Parameters allow tuning the detection threshold (in microvolts), window length,
@@ -10,7 +10,7 @@ and a refractory interval to avoid multiple triggers for a single blink.
 Optionally, it can press a key (e.g., 'b') on detection.
 
 Example:
-  python scripts/blink_detector.py --sfreq 500 --picks Fp1,Fp2 --window 0.5 \
+    python scripts/blink_detector.py --sfreq 500 --picks 0,1 --window 0.5 \
       --threshold-uv 80 --refractory 0.8 --key b
 """
 import time
@@ -104,8 +104,8 @@ def parse_picks(picks_arg: str) -> Tuple[bool, List[str]]:
     return is_index, parts
 
 
-def resolve_picks(labels: List[str], picks_arg: str, default_names=("Fp1", "Fp2")) -> List[int]:
-    is_index, vals = parse_picks(picks_arg) if picks_arg else (False, list(default_names))
+def resolve_picks(labels: List[str], picks_arg: str, default_picks="0,1") -> List[int]:
+    is_index, vals = parse_picks(picks_arg or default_picks)
     if is_index:
         return [int(v) for v in vals]
     lower_map = {lab.lower(): i for i, lab in enumerate(labels)}
@@ -136,7 +136,7 @@ def main():
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument('--sfreq', type=float, default=0.0, help='Sampling rate; if 0, use stream nominal rate')
-    ap.add_argument('--picks', type=str, default='Fp1,Fp2', help='Channel names or indices CSV')
+    ap.add_argument('--picks', type=str, default='0,1', help='Channel names or indices CSV')
     ap.add_argument('--window', type=float, default=0.5, help='Detection window length (seconds)')
     ap.add_argument('--threshold-uv', type=float, default=80.0, help='Peak-to-peak threshold (microvolts) to declare blink')
     ap.add_argument('--refractory', type=float, default=0.8, help='Minimum seconds between blink detections')

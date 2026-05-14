@@ -111,7 +111,7 @@ def test_fp1_fp2():
         print(f"  Available labels: {labels}")
     
     if fp1_idx is not None and fp2_idx is not None:
-        print(f"\nBlink detection picks (--picks Fp1,Fp2) will use indices: {fp1_idx},{fp2_idx}")
+        print(f"\nBlink detection picks (--picks 0,1) will use indices: 0,1")
 
 
 if __name__ == '__main__':
