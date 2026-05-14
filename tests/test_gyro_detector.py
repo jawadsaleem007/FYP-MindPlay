@@ -1,4 +1,5 @@
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -82,3 +83,38 @@ def test_gamepad_opposite_motion_returns_to_center_first():
     assert first_direction == "backward"
     assert next_direction == "center"
     assert detector.current_direction == "center"
+
+
+def test_gyro_processing_latency_stays_below_500hz_sample_interval():
+    detector = make_detector(
+        gamepad_mode=True,
+        gamepad_activation_samples=1,
+        smoothing_window=14,
+        use_z_for_lr=True,
+        z_left_threshold=20.0,
+        z_right_threshold=20.0,
+        vel_return=120.0,
+        deadzone_y=20.0,
+        deadzone_z=15.0,
+        scale_factor=0.25,
+    )
+    detector.sample_debug_count = 5
+
+    sample_count = 1500
+    timeline = np.arange(sample_count, dtype=float)
+    samples = np.column_stack((
+        np.zeros(sample_count),
+        180.0 * np.sin(timeline / 17.0),
+        120.0 * np.cos(timeline / 23.0),
+    ))
+
+    for sample in samples[:100]:
+        detector.process_sample(sample)
+
+    started_at = time.perf_counter()
+    for sample in samples[100:]:
+        detector.process_sample(sample)
+    elapsed = time.perf_counter() - started_at
+
+    avg_latency_ms = (elapsed / (sample_count - 100)) * 1000.0
+    assert avg_latency_ms < 2.0, f"gyro processing averaged {avg_latency_ms:.3f}ms/sample"

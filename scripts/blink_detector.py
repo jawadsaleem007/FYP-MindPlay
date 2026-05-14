@@ -27,6 +27,11 @@ from pylsl import StreamInlet, resolve_byprop
 from scipy.signal import butter, filtfilt
 
 try:
+    from scripts.command_cooldown import cooldown_status, resolve_state_file
+except ImportError:
+    from command_cooldown import cooldown_status, resolve_state_file
+
+try:
     pydirectinput = importlib.import_module('pydirectinput')
     _key_output_available = True
 except Exception:
@@ -115,7 +120,7 @@ def resolve_picks(labels: List[str], picks_arg: str, default_names=("Fp1", "Fp2"
     return [0]
 
 
-def press_key_once(k='enter'):
+def press_key_once(k='b'):
     if not _key_output_available:
         return False
     try:
@@ -136,8 +141,11 @@ def main():
     ap.add_argument('--threshold-uv', type=float, default=80.0, help='Peak-to-peak threshold (microvolts) to declare blink')
     ap.add_argument('--refractory', type=float, default=0.8, help='Minimum seconds between blink detections')
     ap.add_argument('--scale-to-uv', action='store_true', help='Multiply incoming volts by 1e6 to convert to microvolts')
-    ap.add_argument('--key', type=str, default='enter', help='Key to press on blink (default: enter)')
+    ap.add_argument('--key', type=str, default=None, help='Optional key to press on blink (e.g., b)')
+    ap.add_argument('--cooldown-state-file', type=str, default='gamepad_state.json',
+                    help='Shared state JSON containing gyro cooldown info; blank disables suppression')
     args = ap.parse_args()
+    cooldown_state_file = resolve_state_file(args.cooldown_state_file)
 
     info = find_eeg_stream()
     inlet = StreamInlet(info)
@@ -179,10 +187,15 @@ def main():
 
             if max_ptp >= args.threshold_uv and (now - last_event) >= args.refractory:
                 last_event = now
-                print(f'Blink detected! (ptp={max_ptp:.1f}uV)')
-                if args.key:
-                    ok = press_key_once(args.key)
-                    print(f'Action: key "{args.key}" pressed status={ok}')
+                blocked, remaining, source = cooldown_status(cooldown_state_file, now=now)
+                if blocked:
+                    src = f" after {source}" if source else ""
+                    print(f'Blink ignored by gyro cooldown{src} ({remaining:.1f}s remaining)')
+                else:
+                    print(f'Blink detected! (ptp={max_ptp:.1f}uV)')
+                    if args.key:
+                        ok = press_key_once(args.key)
+                        print(f'Action: key "{args.key}" pressed status={ok}')
 
             # slide window by half for responsiveness
             shift = win_samples // 2

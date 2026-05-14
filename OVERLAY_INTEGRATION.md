@@ -108,6 +108,9 @@ JSON structure written by gyro_detector.py:
     "backward": false
   },
   "output": "holding left",
+  "cooldown_until": 0.0,
+  "cooldown_seconds": 0.0,
+  "cooldown_source": "",
   "timestamp": 1711612000.123
 }
 
@@ -115,6 +118,9 @@ Fields:
   command (str): Current active command - "center", "left", "right", "forward", "backward", "calibrating"
   active_states (dict): Boolean flags for each direction
   output (str): Status text - "idle", "holding left", "pressing up", etc.
+  cooldown_until (float): Unix timestamp until blink/MI commands are ignored
+  cooldown_seconds (float): Configured cooldown duration in seconds
+  cooldown_source (str): Gyro direction that started the cooldown
   timestamp (float): Time when state was written
 
 

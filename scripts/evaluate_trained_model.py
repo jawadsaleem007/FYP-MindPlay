@@ -8,7 +8,7 @@ Usage:
       --epochs data\S02_epochs_20251130_172259.npy --labels data\S02_labels_20251130_172259.npy --sfreq 500 --folds 5
 
 Options:
-  --picks 0,1,2         (optional) subset channels
+    --picks 2,3,4         subset source channels by index
   --crop-start 0 --crop-dur 4.0  (optional) crop window in seconds
   --n-csp 2             (override number of CSP pairs per band)
 """
@@ -38,9 +38,18 @@ def load_epochs_labels(ep_path: str, lab_path: str):
 def parse_picks(picks_csv: str, n_channels: int):
     parts = [p.strip() for p in picks_csv.split(',') if p.strip()]
     idxs = [int(p) for p in parts]
-    for i in idxs:
-        if i < 0 or i >= n_channels:
-            raise ValueError(f'Pick {i} out of range [0,{n_channels-1}]')
+    if all(0 <= idx < n_channels for idx in idxs):
+        return np.asarray(idxs, dtype=int)
+    if len(idxs) == n_channels:
+        fallback = np.arange(n_channels, dtype=int)
+        print(
+            f'Warning: requested source channel picks {idxs} are outside this {n_channels}-channel epoch array; '
+            f'assuming the data is already narrowed and using indices {fallback.tolist()}'
+        )
+        return fallback
+    for idx in idxs:
+        if idx < 0 or idx >= n_channels:
+            raise ValueError(f'Pick {idx} out of range [0,{n_channels-1}]')
     return np.asarray(idxs, dtype=int)
 
 
@@ -51,7 +60,7 @@ def main():
     ap.add_argument('--labels', required=True, type=str)
     ap.add_argument('--sfreq', required=True, type=float)
     ap.add_argument('--folds', type=int, default=5)
-    ap.add_argument('--picks', type=str, default=None)
+    ap.add_argument('--picks', type=str, default='2,3,4')
     ap.add_argument('--crop-start', type=float, default=None)
     ap.add_argument('--crop-dur', type=float, default=None)
     ap.add_argument('--n-csp', type=int, default=None)

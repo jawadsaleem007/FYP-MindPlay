@@ -5,7 +5,7 @@
 - metadata: JSON-like string or dict with at least 'sampling_rate'
 
 Options:
-- --picks: channel indices CSV to select, default '0,1,2' (e.g., Cz,C3,C4 positions in your dataset)
+- --picks: source channel indices CSV to select, default '2,3,4'
 - --crop-start/--crop-dur: optionally crop each trial to a subwindow in seconds (e.g., start=1.0 dur=3.0)
 - --out: output model path (.joblib)
 
@@ -39,16 +39,25 @@ def to_numpy_epochs(obj_arr: np.ndarray) -> np.ndarray:
 def parse_picks(picks_csv: str, n_channels: int) -> np.ndarray:
     parts = [p.strip() for p in picks_csv.split(',') if p.strip()]
     idxs = [int(p) for p in parts]
-    for i in idxs:
-        if i < 0 or i >= n_channels:
-            raise ValueError(f'Pick index {i} out of range [0,{n_channels-1}]')
+    if all(0 <= idx < n_channels for idx in idxs):
+        return np.asarray(idxs, dtype=int)
+    if len(idxs) == n_channels:
+        fallback = np.arange(n_channels, dtype=int)
+        print(
+            f'Warning: requested source channel picks {idxs} are outside this {n_channels}-channel epoch array; '
+            f'assuming the data is already narrowed and using indices {fallback.tolist()}'
+        )
+        return fallback
+    for idx in idxs:
+        if idx < 0 or idx >= n_channels:
+            raise ValueError(f'Pick index {idx} out of range [0,{n_channels-1}]')
     return np.asarray(idxs, dtype=int)
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--npz', type=str, required=True, help='Path to NPZ file with data/labels/metadata')
-    ap.add_argument('--picks', type=str, default='0,1,2', help='Channel indices CSV to select (e.g., "0,1,2")')
+    ap.add_argument('--picks', type=str, default='2,3,4', help='Source channel indices CSV to select (current Smarting setup uses "2,3,4")')
     ap.add_argument('--crop-start', type=float, default=None, help='Crop start time (s) within each trial')
     ap.add_argument('--crop-dur', type=float, default=None, help='Crop duration (s) within each trial')
     ap.add_argument('--out', type=str, default='fbcsp_lda_from_npz.joblib')

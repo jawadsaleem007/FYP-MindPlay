@@ -52,7 +52,7 @@ python scripts/real_time_classifier.py `
   --sfreq 250 `
   --window 3.0 `
   --step 0.5 `
-  --picks "Cz,C3,C4" `
+  --picks "2,3,4" `
   --delay 0.1
 ```
 
@@ -67,7 +67,7 @@ python scripts/real_time_classifier.py `
   --sfreq 250 `
   --window 3.0 `
   --step 0.5 `
-  --picks "Cz,C3,C4"
+  --picks "2,3,4"
 ```
 
 **Expected Output from Terminal 1:**
@@ -78,7 +78,7 @@ Real-time FBCSP+LDA Classifier
 Model: fbcsp_lda_S02.joblib
 Sampling rate: 250 Hz
 Window duration: 3.0s, Step: 0.5s
-Channels: ['Cz', 'C3', 'C4']
+Channels: [2, 3, 4]
 Awaiting EEG stream...
 [LSL Connected at 12:34:56]
 [12:35:02] Window 1: Prediction = REST (Conf: 0.82)

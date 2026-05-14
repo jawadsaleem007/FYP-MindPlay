@@ -1,8 +1,8 @@
 param(
   [string]$ModelPath = "",
   [switch]$NoOverlayFollow,
-  [string]$StatusFile = "",
-  [string]$ConfigFile = ""
+  [double]$CommandCooldownSeconds = 2.0,
+  [string]$StatusFile = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -35,27 +35,43 @@ function Test-IsAdmin {
   return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-function Quote-Single([string]$value) {
+function ConvertTo-SingleQuotedArgument([string]$value) {
   return "'" + $value.Replace("'", "''") + "'"
 }
 
-function Normalize-PathInput([string]$value) {
-  if ([string]::IsNullOrWhiteSpace($value)) {
-    return $value
-  }
+function Test-PythonModule {
+  param(
+    [string]$PythonExe,
+    [string]$ModuleName
+  )
 
-  $clean = $value.Trim()
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $PythonExe
+  $psi.Arguments = "-c `"import $ModuleName`""
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.CreateNoWindow = $true
 
-  # Handle accidental list-like wrapping: [E:\path\model.joblib] or ['E:\path\model.joblib'].
-  if ($clean.StartsWith("[") -and $clean.EndsWith("]")) {
-    $clean = $clean.Substring(1, $clean.Length - 2).Trim()
-  }
+  $process = [System.Diagnostics.Process]::Start($psi)
+  $process.WaitForExit()
+  return $process.ExitCode
+}
 
-  if (($clean.StartsWith('"') -and $clean.EndsWith('"')) -or ($clean.StartsWith("'") -and $clean.EndsWith("'"))) {
-    $clean = $clean.Substring(1, $clean.Length - 2).Trim()
-  }
+function Install-PythonPackage {
+  param(
+    [string]$PythonExe,
+    [string]$PackageName,
+    [string]$WorkingDirectory
+  )
 
-  return $clean
+  $process = Start-Process -FilePath $PythonExe `
+    -ArgumentList @("-m", "pip", "install", $PackageName) `
+    -WorkingDirectory $WorkingDirectory `
+    -NoNewWindow `
+    -Wait `
+    -PassThru
+  return $process.ExitCode
 }
 
 function Write-StatusFile {
@@ -100,8 +116,6 @@ function Resolve-ModelPath {
     [string]$RequestedPath
   )
 
-  $RequestedPath = Normalize-PathInput $RequestedPath
-
   if (-not [string]::IsNullOrWhiteSpace($RequestedPath)) {
     $candidate = $RequestedPath
     if (-not [System.IO.Path]::IsPathRooted($candidate)) {
@@ -109,28 +123,6 @@ function Resolve-ModelPath {
     }
     if (Test-Path $candidate) {
       return (Resolve-Path $candidate).Path
-    }
-
-    if (-not [System.IO.Path]::IsPathRooted($RequestedPath)) {
-      # Handle root-prefixed relative paths, e.g. "FYP-MindPlay\fbcsp_lda_S15.joblib".
-      $rootLeaf = [System.IO.Path]::GetFileName($RootDir)
-      $normalizedRel = $RequestedPath.TrimStart('\\', '/')
-      if ($normalizedRel.StartsWith("$rootLeaf\\", [System.StringComparison]::OrdinalIgnoreCase) -or
-          $normalizedRel.StartsWith("$rootLeaf/", [System.StringComparison]::OrdinalIgnoreCase)) {
-        $trimmedRel = $normalizedRel.Substring($rootLeaf.Length).TrimStart('\\', '/')
-        if (-not [string]::IsNullOrWhiteSpace($trimmedRel)) {
-          $trimmedCandidate = Join-Path $RootDir $trimmedRel
-          if (Test-Path $trimmedCandidate) {
-            return (Resolve-Path $trimmedCandidate).Path
-          }
-        }
-      }
-
-      # Last-resort fallback to basename under project root.
-      $leafCandidate = Join-Path $RootDir ([System.IO.Path]::GetFileName($RequestedPath))
-      if (Test-Path $leafCandidate) {
-        return (Resolve-Path $leafCandidate).Path
-      }
     }
 
     $leaf = [System.IO.Path]::GetFileName($RequestedPath)
@@ -167,25 +159,21 @@ function Start-PythonComponent {
     [string]$Title,
     [string]$PythonExe,
     [string]$ScriptPath,
-    [string[]]$ScriptArgs,
+    [string[]]$ComponentArgs,
     [string]$WorkingDirectory
   )
 
-  $quotedRoot = Quote-Single $WorkingDirectory
-  $quotedPython = Quote-Single $PythonExe
-  $quotedScript = Quote-Single $ScriptPath
+  $quotedRoot = ConvertTo-SingleQuotedArgument $WorkingDirectory
+  $quotedPython = ConvertTo-SingleQuotedArgument $PythonExe
+  $quotedScript = ConvertTo-SingleQuotedArgument $ScriptPath
   $quotedArgs = @()
-  foreach ($arg in $ScriptArgs) {
-    $quotedArgs += (Quote-Single $arg)
+  foreach ($arg in $ComponentArgs) {
+    $quotedArgs += (ConvertTo-SingleQuotedArgument $arg)
   }
-  $pythonArgExpr = @($quotedScript)
-  if ($quotedArgs.Count -gt 0) {
-    $pythonArgExpr += $quotedArgs
-  }
-  $joinedArgs = ($pythonArgExpr -join ", ")
+  $joinedArgs = ($quotedArgs -join " ")
 
   $safeTitle = $Title.Replace("'", "''")
-  $command = "`$host.UI.RawUI.WindowTitle = '$safeTitle'; Set-Location $quotedRoot; `$pyArgs = @($joinedArgs); & $quotedPython @pyArgs"
+  $command = "`$host.UI.RawUI.WindowTitle = '$safeTitle'; Set-Location $quotedRoot; & $quotedPython $quotedScript $joinedArgs"
 
   return Start-Process -FilePath "powershell.exe" `
     -ArgumentList @("-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $command) `
@@ -199,18 +187,16 @@ if (-not (Test-IsAdmin)) {
   Write-Host "Requesting administrator privileges (UAC)..." -ForegroundColor Yellow
 
   $selfPath = $PSCommandPath
-  $elevateArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $selfPath)
+  $elevateArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$selfPath`"")
   if (-not [string]::IsNullOrWhiteSpace($ModelPath)) {
-    $elevateArgs += @("-ModelPath", (Normalize-PathInput $ModelPath))
+    $elevateArgs += @("-ModelPath", "`"$ModelPath`"")
   }
   if ($NoOverlayFollow) {
     $elevateArgs += "-NoOverlayFollow"
   }
+  $elevateArgs += @("-CommandCooldownSeconds", "$CommandCooldownSeconds")
   if (-not [string]::IsNullOrWhiteSpace($StatusFile)) {
-    $elevateArgs += @("-StatusFile", (Normalize-PathInput $StatusFile))
-  }
-  if (-not [string]::IsNullOrWhiteSpace($ConfigFile)) {
-    $elevateArgs += @("-ConfigFile", (Normalize-PathInput $ConfigFile))
+    $elevateArgs += @("-StatusFile", "`"$StatusFile`"")
   }
 
   Start-Process -FilePath "powershell.exe" -Verb RunAs -ArgumentList $elevateArgs
@@ -271,8 +257,8 @@ try {
   }
   $missingPackages = @()
   foreach ($module in $moduleToPackage.Keys) {
-    & $PYTHON_EXE -c "import $module" *>$null
-    if ($LASTEXITCODE -ne 0) {
+    $moduleExitCode = Test-PythonModule -PythonExe $PYTHON_EXE -ModuleName $module
+    if ($moduleExitCode -ne 0) {
       $missingPackages += $moduleToPackage[$module]
     }
   }
@@ -282,30 +268,9 @@ try {
     Set-LauncherPhase "installing" "Installing missing packages: $($missingPackages -join ', ')"
     Write-Host "Installing missing packages: $($missingPackages -join ', ')" -ForegroundColor Yellow
     foreach ($package in $missingPackages) {
-      & $PYTHON_EXE -m pip install $package
-      if ($LASTEXITCODE -ne 0) {
+      $installExitCode = Install-PythonPackage -PythonExe $PYTHON_EXE -PackageName $package -WorkingDirectory $ROOT_DIR
+      if ($installExitCode -ne 0) {
         throw "Failed to install required package: $package"
-      }
-    }
-  }
-
-  # Load launcher config if provided
-  $blinkConfig = $null
-  $classifierConfig = $null
-  if (-not [string]::IsNullOrWhiteSpace($ConfigFile)) {
-    $configPath = [System.IO.Path]::GetFullPath($ConfigFile)
-    if (Test-Path $configPath) {
-      try {
-        $configJson = Get-Content -Path $configPath -Raw | ConvertFrom-Json
-        if ($configJson.PSObject.Properties.Name -contains "blink") {
-          $blinkConfig = $configJson.blink
-        }
-        if ($configJson.PSObject.Properties.Name -contains "classifier") {
-          $classifierConfig = $configJson.classifier
-        }
-        Write-Host "Loaded launcher configuration from: $configPath" -ForegroundColor Green
-      } catch {
-        Write-Host "Warning: Failed to load config file: $_" -ForegroundColor Yellow
       }
     }
   }
@@ -330,106 +295,59 @@ try {
   "--smoothing-window", "14",
   "--gamepad-mode",
   "--gamepad-repeat-interval", "0.40",
+  "--command-cooldown", "$CommandCooldownSeconds",
   "--output-keys",
   "--verbose",
   "--overlay-state-file", $STATE_FILE
   )
 
-  # Prepare blink config values (PowerShell 5.1 compatible)
-  $blinkSfreq = if ($blinkConfig -and $blinkConfig.sfreq) { $blinkConfig.sfreq } else { "500" }
-  $blinkPicks = if ($blinkConfig -and $blinkConfig.picks) { $blinkConfig.picks } else { "Fp1,Fp2" }
-  $blinkWindow = if ($blinkConfig -and $blinkConfig.window) { $blinkConfig.window } else { "0.5" }
-  $blinkThreshold = if ($blinkConfig -and $blinkConfig.threshold_uv) { $blinkConfig.threshold_uv } else { "140" }
-  $blinkRefractory = if ($blinkConfig -and $blinkConfig.refractory) { $blinkConfig.refractory } else { "0.8" }
-
   $blinkArgs = @(
-  "--sfreq", $blinkSfreq,
-  "--picks", $blinkPicks,
-  "--window", $blinkWindow,
-  "--threshold-uv", $blinkThreshold,
-  "--refractory", $blinkRefractory
+  "--sfreq", "500",
+  "--picks", "Fp1,Fp2",
+  "--window", "0.5",
+  "--threshold-uv", "80",
+  "--refractory", "0.8",
+  "--cooldown-state-file", $STATE_FILE
   )
-  
-  # Add key argument if specified in config
-  if ($blinkConfig -and -not [string]::IsNullOrWhiteSpace($blinkConfig.key)) {
-    $blinkArgs += @("--key", $blinkConfig.key)
-  }
-  
-  # Add scale-to-uv flag if enabled in config
-  if ($blinkConfig.scale_to_uv -eq $true) {
-    $blinkArgs += "--scale-to-uv"
-  }
-  
-  # Add extra args if specified
-  if ($blinkConfig -and -not [string]::IsNullOrWhiteSpace($blinkConfig.extra_args)) {
-    $blinkArgs += $blinkConfig.extra_args
-  }
-
-  # Prepare classifier config values (PowerShell 5.1 compatible)
-  $classifierSfreq = if ($classifierConfig -and $classifierConfig.sfreq) { $classifierConfig.sfreq } else { "500" }
-  $classifierWindow = if ($classifierConfig -and $classifierConfig.window) { $classifierConfig.window } else { "4.0" }
-  $classifierStep = if ($classifierConfig -and $classifierConfig.step) { $classifierConfig.step } else { "0.5" }
-  $classifierPicks = if ($classifierConfig -and $classifierConfig.picks) { $classifierConfig.picks } else { "Cz,C3,C4" }
-  $classifierVoteK = if ($classifierConfig -and $classifierConfig.vote_k) { $classifierConfig.vote_k } else { "5" }
-  $classifierClassNames = if ($classifierConfig -and $classifierConfig.class_names) { $classifierConfig.class_names } else { "0:rest,1:hand_mi" }
-  $classifierThreshold = if ($classifierConfig -and $classifierConfig.hand_mi_threshold) { $classifierConfig.hand_mi_threshold } else { "0.9" }
-  $classifierConsecutive = if ($classifierConfig -and $classifierConfig.hand_mi_consecutive) { $classifierConfig.hand_mi_consecutive } else { "2" }
 
   $classifierArgs = @(
-  "--sfreq", $classifierSfreq,
-  "--window", $classifierWindow,
-  "--step", $classifierStep,
-  "--picks", $classifierPicks,
-  "--vote-k", $classifierVoteK,
-  "--class-names", $classifierClassNames,
-  "--hand-mi-threshold", $classifierThreshold,
-  "--hand-mi-consecutive", $classifierConsecutive
+  "--sfreq", "500",
+  "--window", "3.0",
+  "--step", "0.5",
+  "--picks", "2,3,4",
+  "--vote-k", "5",
+  "--class-names", "0:rest,1:hand_mi",
+  "--hand-mi-threshold", "0.97",
+  "--hand-mi-consecutive", "3",
+  "--cooldown-state-file", $STATE_FILE
   )
-  
-  # Add scale-to-uV flag if enabled in config
-  if ($classifierConfig.scale_to_uV -eq $true) {
-    $classifierArgs += "--scale-to-uV"
-  }
-  
-  # Add block flag if enabled in config
-  if ($classifierConfig.block -eq $true) {
-    $classifierArgs += "--block"
-  }
-  
   $classifierArgs += @("--model", $ModelPath)
-
-  # Log the parameters being used
-  Write-Host ""
-  Write-Host "Component Parameters:" -ForegroundColor Cyan
-  Write-Host "Blink Detector: --sfreq $($blinkArgs[1]) --picks '$($blinkArgs[3])' --window $($blinkArgs[5]) --threshold-uv $($blinkArgs[7]) --refractory $($blinkArgs[9])" -ForegroundColor Gray
-  Write-Host "MI Classifier: --sfreq $($classifierArgs[1]) --window $($classifierArgs[3]) --step $($classifierArgs[5]) --picks '$($classifierArgs[7])' --vote-k $($classifierArgs[9])" -ForegroundColor Gray
-  Write-Host ""
 
   Set-LauncherPhase "starting" "Launching overlay"
   Set-ComponentState "overlay" "starting" 0 "Launching overlay process"
   Write-Host "Starting overlay..." -ForegroundColor Green
-  $overlayProc = Start-PythonComponent -Title "MindPlay Overlay" -PythonExe $PYTHON_EXE -ScriptPath $OVERLAY_SCRIPT -ScriptArgs $overlayArgs -WorkingDirectory $ROOT_DIR
+  $overlayProc = Start-PythonComponent -Title "MindPlay Overlay" -PythonExe $PYTHON_EXE -ScriptPath $OVERLAY_SCRIPT -ComponentArgs $overlayArgs -WorkingDirectory $ROOT_DIR
   Set-ComponentState "overlay" "running" $overlayProc.Id "Overlay started"
   Start-Sleep -Seconds 1
 
   Set-LauncherPhase "starting" "Launching gyro detector"
   Set-ComponentState "gyro" "starting" 0 "Launching gyro process"
   Write-Host "Starting gyro detector..." -ForegroundColor Green
-  $gyroProc = Start-PythonComponent -Title "MindPlay Gyro Detector" -PythonExe $PYTHON_EXE -ScriptPath $GYRO_SCRIPT -ScriptArgs $gyroArgs -WorkingDirectory $ROOT_DIR
+  $gyroProc = Start-PythonComponent -Title "MindPlay Gyro Detector" -PythonExe $PYTHON_EXE -ScriptPath $GYRO_SCRIPT -ComponentArgs $gyroArgs -WorkingDirectory $ROOT_DIR
   Set-ComponentState "gyro" "running" $gyroProc.Id "Gyro started"
   Start-Sleep -Seconds 1
 
   Set-LauncherPhase "starting" "Launching blink detector"
   Set-ComponentState "blink" "starting" 0 "Launching blink process"
   Write-Host "Starting blink detector..." -ForegroundColor Green
-  $blinkProc = Start-PythonComponent -Title "MindPlay Blink Detector" -PythonExe $PYTHON_EXE -ScriptPath $BLINK_SCRIPT -ScriptArgs $blinkArgs -WorkingDirectory $ROOT_DIR
+  $blinkProc = Start-PythonComponent -Title "MindPlay Blink Detector" -PythonExe $PYTHON_EXE -ScriptPath $BLINK_SCRIPT -ComponentArgs $blinkArgs -WorkingDirectory $ROOT_DIR
   Set-ComponentState "blink" "running" $blinkProc.Id "Blink started"
   Start-Sleep -Seconds 1
 
   Set-LauncherPhase "starting" "Launching real-time classifier"
   Set-ComponentState "classifier" "starting" 0 "Launching classifier process"
   Write-Host "Starting real-time classifier..." -ForegroundColor Green
-  $classifierProc = Start-PythonComponent -Title "MindPlay Real-Time Classifier" -PythonExe $PYTHON_EXE -ScriptPath $CLASSIFIER_SCRIPT -ScriptArgs $classifierArgs -WorkingDirectory $ROOT_DIR
+  $classifierProc = Start-PythonComponent -Title "MindPlay Real-Time Classifier" -PythonExe $PYTHON_EXE -ScriptPath $CLASSIFIER_SCRIPT -ComponentArgs $classifierArgs -WorkingDirectory $ROOT_DIR
   Set-ComponentState "classifier" "running" $classifierProc.Id "Classifier started"
 
   Set-LauncherPhase "ready" "All components launched in admin mode"
@@ -441,10 +359,14 @@ try {
   Write-Host "Classifier PID: $($classifierProc.Id)"
   Write-Host ""
   Write-Host "Classifier rule active: hand_mi only when >97% for 3 consecutive windows; otherwise rest(0)." -ForegroundColor Cyan
+  Write-Host "Gyro command cooldown: $CommandCooldownSeconds second(s) blocking blink/MI after non-center gyro commands." -ForegroundColor Cyan
   Write-Host "Use Ctrl+C in each component window to stop it." -ForegroundColor Yellow
 }
 catch {
-  $msg = $_.Exception.Message
+  $msg = ($_ | Out-String).Trim()
+  if ([string]::IsNullOrWhiteSpace($msg)) {
+    $msg = $_.Exception.Message
+  }
   Set-LauncherPhase "error" $msg
   Set-ComponentState "overlay" "error" 0 "Launcher failed before completion"
   Set-ComponentState "gyro" "error" 0 "Launcher failed before completion"

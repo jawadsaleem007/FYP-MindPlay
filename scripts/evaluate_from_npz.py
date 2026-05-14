@@ -1,7 +1,7 @@
 """Evaluate FBCSP+LDA via K-fold CV on NPZ data.
 
 Usage:
-  python scripts/evaluate_from_npz.py --npz data\raw_data_XXXX.npz --picks 0,3,4 --crop-start 0 --crop-dur 3.0 --folds 5
+    python scripts/evaluate_from_npz.py --npz data\raw_data_XXXX.npz --picks 2,3,4 --crop-start 0 --crop-dur 3.0 --folds 5
 Prints mean accuracy and std across folds.
 """
 import argparse
@@ -28,16 +28,25 @@ def to_numpy_epochs(obj_arr: np.ndarray) -> np.ndarray:
 def parse_picks(picks_csv: str, n_channels: int) -> np.ndarray:
     parts = [p.strip() for p in picks_csv.split(',') if p.strip()]
     idxs = [int(p) for p in parts]
-    for i in idxs:
-        if i < 0 or i >= n_channels:
-            raise ValueError(f'Pick index {i} out of range [0,{n_channels-1}]')
+    if all(0 <= idx < n_channels for idx in idxs):
+        return np.asarray(idxs, dtype=int)
+    if len(idxs) == n_channels:
+        fallback = np.arange(n_channels, dtype=int)
+        print(
+            f'Warning: requested source channel picks {idxs} are outside this {n_channels}-channel epoch array; '
+            f'assuming the data is already narrowed and using indices {fallback.tolist()}'
+        )
+        return fallback
+    for idx in idxs:
+        if idx < 0 or idx >= n_channels:
+            raise ValueError(f'Pick index {idx} out of range [0,{n_channels-1}]')
     return np.asarray(idxs, dtype=int)
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--npz', type=str, required=True)
-    ap.add_argument('--picks', type=str, default='0,1,2')
+    ap.add_argument('--picks', type=str, default='2,3,4')
     ap.add_argument('--crop-start', type=float, default=None)
     ap.add_argument('--crop-dur', type=float, default=None)
     ap.add_argument('--folds', type=int, default=5)

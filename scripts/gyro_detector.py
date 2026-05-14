@@ -56,6 +56,11 @@ import numpy as np
 from pylsl import StreamInlet, resolve_byprop
 
 try:
+    from scripts.command_cooldown import cooldown_payload, resolve_state_file
+except ImportError:
+    from command_cooldown import cooldown_payload, resolve_state_file
+
+try:
     pydirectinput = importlib.import_module('pydirectinput')
     _key_output_available = True
 except Exception:
@@ -724,24 +729,26 @@ class OverlayStateWriter:
     """Writes gamepad state to JSON file for overlay display."""
     
     def __init__(self, state_file: str):
-        if state_file:
-            file_path = Path(state_file)
-            if not file_path.is_absolute():
-                project_root = Path(__file__).resolve().parent.parent
-                file_path = project_root / file_path
-            self.state_file = file_path.resolve()
-        else:
-            self.state_file = None
+        self.state_file = resolve_state_file(state_file)
         self.last_write_time = 0.0
         self.write_interval = 0.05  # Throttle writes to max 20 updates/sec
     
-    def update(self, command: str, active_states: dict, output_text: str = "idle"):
+    def update(
+        self,
+        command: str,
+        active_states: dict,
+        output_text: str = "idle",
+        cooldown_until: float = 0.0,
+        cooldown_seconds: float = 0.0,
+        cooldown_source: str = "",
+        force: bool = False,
+    ):
         """Update overlay state file with current gamepad status."""
         if not self.state_file:
             return
         
         now = time.time()
-        if (now - self.last_write_time) < self.write_interval:
+        if not force and (now - self.last_write_time) < self.write_interval:
             return  # Throttle writes
         
         try:
@@ -751,6 +758,7 @@ class OverlayStateWriter:
                 "output": output_text,
                 "timestamp": now,
             }
+            state_data.update(cooldown_payload(cooldown_until, cooldown_seconds, cooldown_source))
             
             # Atomic write: temp file then rename
             temp_file = self.state_file.with_suffix('.tmp')
@@ -843,6 +851,8 @@ def main():
                     help='Enable keyboard output (default: disabled, just prints)')
     ap.add_argument('--gamepad-repeat-interval', type=float, default=0.12,
                     help='In gamepad mode, seconds between repeated left/right keypresses while latched')
+    ap.add_argument('--command-cooldown', type=float, default=2.0,
+                    help='Seconds to block blink/MI commands after a non-center gyro direction; <=0 disables')
     
     # Debug options
     ap.add_argument('--verbose', action='store_true',
@@ -937,6 +947,9 @@ def main():
     
     try:
         sample_count = 0
+        command_cooldown_seconds = max(0.0, float(args.command_cooldown))
+        command_cooldown_until = 0.0
+        command_cooldown_source = ""
         last_repeat_time = {
             'left': 0.0,
             'right': 0.0,
@@ -968,6 +981,13 @@ def main():
             # Process sample
             direction, velocity = detector.process_sample(gyro_sample)
             output_state_text = "idle"
+            cooldown_started = False
+
+            if direction in ('left', 'right', 'forward', 'backward') and command_cooldown_seconds > 0.0:
+                now = time.time()
+                command_cooldown_until = now + command_cooldown_seconds
+                command_cooldown_source = direction
+                cooldown_started = True
 
             # In gamepad mode, keep repeating left/right until center is reached.
             if args.gamepad_mode and args.output_keys and _key_output_available:
@@ -1004,10 +1024,17 @@ def main():
                 current_cmd = detector.current_direction if args.gamepad_mode else (direction if direction else "center")
                 if output_state_text == "idle" and direction:
                     output_state_text = f"detected {direction}"
+                cooldown_remaining = max(0.0, command_cooldown_until - time.time())
+                if output_state_text == "idle" and cooldown_remaining > 0.0:
+                    output_state_text = f"gyro cooldown {cooldown_remaining:.1f}s"
                 overlay_writer.update(
                     command=current_cmd,
                     active_states=detector.direction_active,
                     output_text=output_state_text,
+                    cooldown_until=command_cooldown_until,
+                    cooldown_seconds=command_cooldown_seconds,
+                    cooldown_source=command_cooldown_source,
+                    force=cooldown_started,
                 )
             
             # Print verbose info
@@ -1021,6 +1048,8 @@ def main():
                 if direction == 'center':
                     print('>>> CENTER')
                     continue
+                if cooldown_started:
+                    print(f">>> Gyro command cooldown started: {command_cooldown_seconds:.1f}s after {direction}")
                 if args.output_keys:
                     if args.gamepad_mode and direction in ('left', 'right', 'forward', 'backward'):
                         # In gamepad mode, key output is handled by the repeat loop only.

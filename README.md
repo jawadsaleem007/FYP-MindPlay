@@ -1,12 +1,12 @@
 **FBCSP+LDA EEG pipeline**
 
-- **Purpose**: Train an individual FBCSP+LDA classifier for Hand motor imagery vs Rest using Cz,C3,C4 channels (or any 3-channel montage). The pipeline expects microvolts (uV) units throughout.
+- **Purpose**: Train an individual FBCSP+LDA classifier for Hand motor imagery vs Rest using source channel indices 2,3,4 (or any consistent 3-channel montage). The pipeline expects microvolts (uV) units throughout.
 
 - **Files**:
 - `src/fbcsp.py`: FBCSP implementation + LDA training, save/load.
 - `scripts/train_fbcsp_lda.py`: Training script. Accepts `.npy` epoch and label files or can generate synthetic data.
 - `scripts/real_time_classifier.py`: Connects to LSL EEG stream (type='EEG'), buffers windows, classifies in real-time using a saved model.
-- `scripts/record_trials_lsl.py`: Records labeled MI vs Rest epochs from an LSL EEG stream (default picks Cz,C3,C4) and saves `epochs.npy` and `labels.npy` in microvolts.
+- `scripts/record_trials_lsl.py`: Records labeled MI vs Rest epochs from an LSL EEG stream (default picks 2,3,4) and saves `epochs.npy` and `labels.npy` in microvolts.
 - `requirements.txt`: Python dependencies.
 - `tests/test_pipeline.py`: Synthetic data unit test for quick verification.
 
@@ -48,13 +48,13 @@ Training flow in GUI:
 
 If evaluation accuracy is below 60%, GUI asks **Retry** or **Continue**.
 
-If your Smarting24 LSL stream provides values in volts, pass `--scale-to-uv` to convert to microvolts. The pipeline expects channels ordered as Cz, C3, C4 or similar mapping; ensure channel ordering matches how you record.
+If your Smarting24 LSL stream provides values in volts, pass `--scale-to-uv` to convert to microvolts. The current Smarting setup uses source channel indices 2,3,4 for the MI montage; ensure channel ordering matches how you record.
 
 **Record labeled data** (MI vs Rest)
 - Start your Smarting LSL stream, then run:
 
 ```powershell
-python .\scripts\record_trials_lsl.py --subject S01 --picks Cz,C3,C4 --trial-len 3.0 --trials-per-class 40 --prep-len 2.0 --inter-trial 2.0 --randomize --scale-to-uv
+python .\scripts\record_trials_lsl.py --subject S01 --picks 2,3,4 --trial-len 3.0 --trials-per-class 40 --prep-len 2.0 --inter-trial 2.0 --randomize --scale-to-uv
 ```
 
 - This saves `epochs.npy` and `labels.npy` under `data/` with timestamps. Use the printed training command to train your per-subject model.

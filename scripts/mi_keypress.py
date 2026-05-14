@@ -10,7 +10,7 @@ If your labels differ, set --mi-label accordingly.
 
 Example:
   python scripts/mi_keypress.py --model fbcsp_lda_S02.joblib --sfreq 500 \
-      --window 4.0 --step 0.5 --picks C3,Cz,C4 --vote-k 5 \
+    --window 4.0 --step 0.5 --picks 2,3,4 --vote-k 5 \
       --threshold 0.65 --key a --min-interval 1.0
 """
 import time
@@ -97,11 +97,24 @@ def parse_picks(picks_arg):
     return None, parts
 
 
+def resolve_numeric_picks(idxs, channel_count):
+    if all(0 <= idx < channel_count for idx in idxs):
+        return idxs
+    if len(idxs) == channel_count:
+        fallback = list(range(channel_count))
+        print(
+            f"Warning: requested source channel picks {idxs} are outside this {channel_count}-channel stream; "
+            f"assuming the stream is already narrowed and using indices {fallback}"
+        )
+        return fallback
+    raise ValueError(f"Channel picks {idxs} are out of range for stream with {channel_count} channels")
+
+
 def resolve_picks(info, picks_arg, default_names=('Cz', 'C3', 'C4')):
     labels = get_channel_labels(info)
     idxs, names = parse_picks(picks_arg) if picks_arg else (None, None)
     if idxs is not None:
-        return idxs
+        return resolve_numeric_picks(idxs, info.channel_count())
     lower_map = {lab.lower(): i for i, lab in enumerate(labels)}
     chosen = []
     names_to_use = names if names else list(default_names)
@@ -192,7 +205,7 @@ def main():
     ap.add_argument('--sfreq', type=float, required=True)
     ap.add_argument('--window', type=float, default=4.0)
     ap.add_argument('--step', type=float, default=0.5)
-    ap.add_argument('--picks', type=str, default='C3,Cz,C4')
+    ap.add_argument('--picks', type=str, default='2,3,4')
     ap.add_argument('--scale-to-uv', action='store_true')
     ap.add_argument('--vote-k', type=int, default=5)
     ap.add_argument('--mi-label', type=int, default=0, help='Which label corresponds to MI (default 0)')

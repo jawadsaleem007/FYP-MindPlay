@@ -1,7 +1,7 @@
 """Record labeled MI vs Rest epochs from an LSL EEG stream.
 
-This script connects to the first LSL stream with type='EEG', selects channels
-(Cz,C3,C4 by default), and records labeled trials (epochs) for training.
+This script connects to the first LSL stream with type='EEG', selects source
+channel indices 2,3,4 by default, and records labeled trials (epochs) for training.
 
 Outputs:
 - epochs.npy : shape (n_trials_total, n_channels, n_samples) in microvolts (uV)
@@ -54,11 +54,24 @@ def parse_picks(picks_arg: str) -> Tuple[bool, List[str]]:
     return is_index, parts
 
 
+def resolve_numeric_picks(idxs: List[int], channel_count: int) -> List[int]:
+    if all(0 <= idx < channel_count for idx in idxs):
+        return idxs
+    if len(idxs) == channel_count:
+        fallback = list(range(channel_count))
+        print(
+            f"Warning: requested source channel picks {idxs} are outside this {channel_count}-channel stream; "
+            f"assuming the stream is already narrowed and using indices {fallback}"
+        )
+        return fallback
+    raise ValueError(f"Channel picks {idxs} are out of range for stream with {channel_count} channels")
+
+
 def resolve_picks(labels: List[str], picks_arg: str, default_names=('Cz', 'C3', 'C4')) -> List[int]:
     is_index, vals = parse_picks(picks_arg) if picks_arg else (False, list(default_names))
     if is_index:
         idxs = [int(v) for v in vals]
-        return idxs
+        return resolve_numeric_picks(idxs, len(labels))
     # name-based
     lower_map = {lab.lower(): i for i, lab in enumerate(labels)}
     idxs = []
@@ -105,7 +118,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--subject', type=str, default='S01', help='Subject ID tag for filenames')
     ap.add_argument('--out-dir', type=str, default='data', help='Output directory')
-    ap.add_argument('--picks', type=str, default='Cz,C3,C4', help='Channel names or indices CSV (e.g., "Cz,C3,C4" or "0,1,2")')
+    ap.add_argument('--picks', type=str, default='2,3,4', help='Channel names or indices CSV (current Smarting setup uses "2,3,4")')
     ap.add_argument('--trial-len', type=float, default=3.0, help='Trial epoch length (seconds). Default 3.0s for MI and Rest')
     ap.add_argument('--trials-per-class', type=int, default=10, help='Trials for each class (MI and Rest)')
     ap.add_argument('--prep-len', type=float, default=2.0, help='Preparation time before each trial (seconds)')

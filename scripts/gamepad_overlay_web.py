@@ -177,6 +177,16 @@ HTML_TEMPLATE = """
             display: inline;
             color: #94A3B8;
         }
+
+        .cooldown-section {
+            margin-top: 8px;
+            font-size: 10px;
+            color: #86EFAC;
+        }
+
+        .cooldown-section.active {
+            color: #FDBA74;
+        }
     </style>
 </head>
 <body>
@@ -203,6 +213,8 @@ HTML_TEMPLATE = """
             <span class="output-label">Output:</span>
             <span id="outputText"> idle</span>
         </div>
+
+        <div class="cooldown-section" id="cooldownText">Cooldown: ready</div>
     </div>
     
     <script>
@@ -210,6 +222,7 @@ HTML_TEMPLATE = """
         const commandIcon = document.getElementById('commandIcon');
         const commandText = document.getElementById('commandText');
         const outputText = document.getElementById('outputText');
+        const cooldownText = document.getElementById('cooldownText');
         const dirBtns = {
             left: document.getElementById('btnL'),
             right: document.getElementById('btnR'),
@@ -237,6 +250,17 @@ HTML_TEMPLATE = """
                 commandDisplay.className = `command-display ${command}`;
                 
                 outputText.textContent = ` ${state.output || 'idle'}`;
+
+                const cooldownUntil = Number(state.cooldown_until || 0);
+                const remaining = Math.max(0, cooldownUntil - (Date.now() / 1000));
+                if (remaining > 0) {
+                    const source = state.cooldown_source || 'gyro';
+                    cooldownText.textContent = `Cooldown: ${remaining.toFixed(1)}s blocking blink/MI (${source})`;
+                    cooldownText.classList.add('active');
+                } else {
+                    cooldownText.textContent = 'Cooldown: ready';
+                    cooldownText.classList.remove('active');
+                }
                 
                 // Update direction buttons
                 for (const [dir, btn] of Object.entries(dirBtns)) {

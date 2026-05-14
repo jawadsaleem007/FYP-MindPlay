@@ -9,6 +9,11 @@ from typing import Any, Dict
 
 import wx
 
+try:
+    from scripts.command_cooldown import cooldown_remaining_from_state
+except ImportError:
+    from command_cooldown import cooldown_remaining_from_state
+
 
 HWND_TOPMOST = -1
 SWP_NOSIZE = 0x0001
@@ -40,12 +45,13 @@ class GamepadOverlay(wx.Frame):
         self.refresh_ms = max(20, refresh_ms)
         self.follow_active_window = follow_active_window
         self.last_state: Dict[str, Any] = {}
+        self.cooldown_was_active = False
         self.update_count = 0
         self.user32 = ctypes.windll.user32
         self.overlay_hwnd = 0
 
         self.overlay_width = 420
-        self.overlay_height = 250
+        self.overlay_height = 282
         self.margin = 12
 
         self.SetSize((self.overlay_width, self.overlay_height))
@@ -111,6 +117,10 @@ class GamepadOverlay(wx.Frame):
         self.output_text.SetForegroundColour(wx.Colour(80, 80, 80))
         root.Add(self.output_text, 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
 
+        self.cooldown_text = wx.StaticText(panel, label="Cooldown: ready")
+        self.cooldown_text.SetForegroundColour(wx.Colour(80, 140, 80))
+        root.Add(self.cooldown_text, 0, wx.LEFT | wx.RIGHT | wx.TOP, 8)
+
         self.status_text = wx.StaticText(panel, label="Status: waiting for state file updates")
         self.status_text.SetForegroundColour(wx.Colour(120, 120, 120))
         root.Add(self.status_text, 0, wx.LEFT | wx.RIGHT | wx.TOP | wx.BOTTOM, 10)
@@ -168,6 +178,9 @@ class GamepadOverlay(wx.Frame):
                 "backward": False,
             },
             "output": "idle",
+            "cooldown_until": 0.0,
+            "cooldown_seconds": 0.0,
+            "cooldown_source": "",
         }
 
         try:
@@ -216,6 +229,17 @@ class GamepadOverlay(wx.Frame):
         output = str(state.get("output", "idle"))
         self.output_text.SetLabel(f"Output: {output}")
 
+        cooldown_remaining = cooldown_remaining_from_state(state)
+        if cooldown_remaining > 0.0:
+            source = str(state.get("cooldown_source") or "gyro")
+            self.cooldown_text.SetLabel(f"Cooldown: {cooldown_remaining:.1f}s blocking blink/MI ({source})")
+            self.cooldown_text.SetForegroundColour(wx.Colour(190, 85, 45))
+            self.cooldown_was_active = True
+        else:
+            self.cooldown_text.SetLabel("Cooldown: ready")
+            self.cooldown_text.SetForegroundColour(wx.Colour(80, 140, 80))
+            self.cooldown_was_active = False
+
         active_dirs = [k for k, v in active.items() if v]
         self.status_text.SetLabel(
             f"Status: updates={self.update_count} active={active_dirs if active_dirs else ['none']}"
@@ -230,13 +254,17 @@ class GamepadOverlay(wx.Frame):
         cmp_state.pop("timestamp", None)
         last_cmp = dict(self.last_state)
         last_cmp.pop("timestamp", None)
-        if cmp_state == last_cmp:
+        cooldown_active = cooldown_remaining_from_state(state) > 0.0
+        if cmp_state == last_cmp and not cooldown_active and not self.cooldown_was_active:
             return
 
-        self.update_count += 1
+        state_changed = cmp_state != last_cmp
+        if state_changed:
+            self.update_count += 1
         self._render_state(state)
-        self.last_state = state
-        print(f"[OVERLAY] Update {self.update_count}: command={state.get('command', 'center')}")
+        if state_changed:
+            self.last_state = state
+            print(f"[OVERLAY] Update {self.update_count}: command={state.get('command', 'center')}")
 
     def _on_close(self, _event: wx.Event) -> None:
         if self.timer.IsRunning():

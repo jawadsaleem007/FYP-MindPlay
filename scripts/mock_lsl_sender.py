@@ -4,11 +4,11 @@ Streams trials from an NPZ file (keys: data, labels, metadata) as an LSL EEG str
 Default units: microvolts (uV), matching the rest of the pipeline.
 
 Example:
-  # Terminal 1: start sender (C3,Cz,C4 indices 0,1,2 at 500 Hz)
-  python .\scripts\mock_lsl_sender.py --npz data\raw_data_20251128_105528.npz --picks 0,1,2 --sfreq 500 --name MockEEG
+    # Terminal 1: start sender (source indices 2,3,4 at 500 Hz)
+    python .\scripts\mock_lsl_sender.py --npz data\raw_data_20251128_105528.npz --picks 2,3,4 --sfreq 500 --name MockEEG
 
   # Terminal 2: run the classifier (4s window)
-  python .\scripts\real_time_classifier.py --model fbcsp_lda_from_npz_012_4s.joblib --sfreq 500 --window 4.0 --step 0.5 --picks 0,1,2 --scale-to-uv
+    python .\scripts\real_time_classifier.py --model fbcsp_lda_from_npz_234_4s.joblib --sfreq 500 --window 4.0 --step 0.5 --picks 2,3,4 --scale-to-uv
 """
 import argparse
 import json
@@ -40,7 +40,7 @@ def build_info(name: str, n_channels: int, sfreq: float, labels=None):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--npz', type=str, required=True)
-    ap.add_argument('--picks', type=str, default='0,1,2', help='Channel indices CSV (e.g., 0,1,2)')
+    ap.add_argument('--picks', type=str, default='2,3,4', help='Source channel indices CSV (current Smarting setup uses 2,3,4)')
     ap.add_argument('--sfreq', type=float, default=0.0, help='Sampling rate; 0 uses metadata value')
     ap.add_argument('--name', type=str, default='MockEEG')
     ap.add_argument('--loop', action='store_true', help='Loop over trials indefinitely')
